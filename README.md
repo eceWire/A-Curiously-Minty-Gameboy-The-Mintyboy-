@@ -148,6 +148,9 @@ Some ideas for future improvements include:
 * Improved battery life
 * Over-the-air updates
 
+**AI Usage**
+Quite little AI was used to complete this project, AI was used to add comments and catch errors, not to edit or give ideas :)
+
 Built For
 
 Hack Club Stardance Challenge
