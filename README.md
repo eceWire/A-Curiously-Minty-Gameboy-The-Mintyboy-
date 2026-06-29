@@ -1,162 +1,319 @@
-**A Curiously Minty Gameboy (The Mintyboy)**
+# A Curiously Minty Gameboy (The Mintyboy)
 
 A Curiously Minty Gameboy, or The Mintyboy, is a handheld gaming and utility system built inside an Altoids tin for the Hack Club Stardance Challenge.
 
-The project started as a simple gaming device using an Arduino Nano, but eventually grew into something much larger. After switching to an Arduino Nano ESP32, I was able to add WiFi, Bluetooth, SMS functionality, weather integration, and a much more advanced settings system.
+It started as a simple Arduino Nano project focused only on games, but gradually evolved into a full embedded system. After switching to an Arduino Nano ESP32, I was able to turn it into a connected handheld device with WiFi, Bluetooth, SMS messaging, weather data, NASA data systems, stock tracking, EEPROM storage, a calculator, and a full settings interface.
 
-The goal was to see how much functionality I could fit inside an Altoids tin while still making it practical and fun to use.
+The goal was to push how much real functionality I could fit into a very constrained physical device while still keeping it usable and stable.
 
-**Features:**
+A lot of the project ended up being about managing complexity rather than just adding features.
 
-** Games:**
+---
 
-The Mintyboy currently includes three games:
+## Core Idea
 
-* 2048
-* Tetris
-* Pong
+The Mintyboy is a compact handheld system that behaves more like a tiny operating system than a single-purpose device.
 
-Each game was programmed specifically for the device and optimized to work with the physical controls and display.
+It combines:
+- Games
+- Real-time internet data systems
+- Communication features
+- Utilities
+- Persistent storage
+- Device configuration
 
-**Settings:**
+Everything runs on a single ESP32 inside an Altoids tin, which forced constant tradeoffs between performance, memory, and functionality.
 
-Instead of being just a game launcher, the Mintyboy includes a settings interface that behaves more like a real handheld device.
+---
 
-Current settings include:
+## Games System
 
-* WiFi management
-* Bluetooth controls
-* Light and dark mode
-* Data clearing and reset options
+The games system was the foundation of the project and influenced how the rest of the device was designed.
 
-The WiFi menu can scan nearby networks, connect to them, and save credentials for future use.
+It includes:
 
-**SMS Messaging:**
+- 2048
+- Tetris
+- Pong
+- Flappy Bird
+- Snake
+- Simon Says
 
-One of the newest features is SMS support.
 
-Using WiFi and the Twilio API, the Mintyboy can send text messages directly from the device. This allows it to act as more than just a gaming console and demonstrates how embedded devices can communicate with cloud services.
+Each game is fully custom-built for:
+- small TFT display constraints
+- physical button input
+- limited RAM and flash storage
 
-**Weather:**
+A major challenge was making sure games didn’t interfere with system features. As more features were added, memory pressure increased, so game optimization became necessary rather than optional.
 
-The Mintyboy can connect to the internet and retrieve weather information through an online API. Weather data is displayed directly on the device.
+---
 
-**Hardware:**
+## NASA Data System (Multi-Source Integration)
 
-Main components:
+NASA integration is not just a single feature, but part of a broader real-time data system.
 
-* Arduino Nano ESP32
-* ST7789 TFT Display
-* Push Buttons
-* Altoids Tin
-* Battery Power System
+The device connects to NASA APIs and can retrieve multiple types of live space and science data, including:
+- Astronomy Picture of the Day (APOD)
+- space imagery and metadata feeds
+- structured NASA API responses (JSON-based)
 
-**Connections**
 
-**Display:**
+The system displays this on the ST7789 TFT display.
 
-| Display Pin | Arduino Nano ESP32 |
-| ----------- | ------------------ |
-| VCC         | 3.3V               |
-| GND         | GND                |
-| SCK         | D13                |
-| MOSI        | D11                |
-| CS          | User Defined       |
-| DC          | User Defined       |
-| RST         | User Defined       |
-| BLK         | 3.3V               |
+This required handling:
+- JSON parsing under memory constraints
+- inconsistent API response sizes
+- image and metadata formatting limitations
+- network reliability issues
 
-**Buttons:**
+This module was one of the first times the device felt like it was truly connected to real-world scientific data rather than just running local code.
 
-| Function |Pin|
-| -------- | --|
-| Up       |D3 |
-| Down     |D5 |
-| Left     |D2 |
-| Right    |D4 |
-| Mode     |D6 |
+---
 
-Update these values to match your actual wiring.
+## Stock Tracking System
 
-**Twilio Setup**
+The stock tracking system pulls real-time financial data from online APIs.
 
-To enable SMS functionality, create a Twilio account and obtain:
+It supports:
+- live stock price retrieval
+- parsing multiple API responses
+- simplified financial dashboards
+- quick switching between tracked symbols
 
-* Account SID
-* Auth Token
-* Twilio Phone Number
+Here's how it works:
 
-Add them to your project:
+1.Put in your ticker symbol (there is no defualt one, the most simplest one would be KO [coca cola]) and use the push buttons to navigate around. It uses Yahoo Finance API key to work!
+2. Watch the data come and a graph print on the screen in real time !
 
-```cpp
-const char* TWILIO_SID = "YOUR_ACCOUNT_SID";
-const char* TWILIO_AUTH = "YOUR_AUTH_TOKEN";
-const char* TWILIO_FROM = "+1234567890";
-```
+The biggest challenge was not fetching data, but making it usable on a very small screen while dealing with inconsistent API formats and network latency.
 
-You will also need to specify the destination phone number used for testing.
 
-The device must be connected to WiFi before SMS features can be used.
+---
 
-**Why I Switched to the Nano ESP32:**
+## Calculator
 
-The project originally used a standard Arduino Nano. While it worked well for basic games, I quickly ran into limitations.
+A built-in calculator provides basic arithmetic functionality.
 
-Switching to the Arduino Nano ESP32 gave me:
+It supports:
+- addition
+- subtraction
+- multiplication
+- division
 
-* Built-in WiFi
-* Built-in Bluetooth
-* More memory
-* Faster processing
-* Internet connectivity
-* Support for cloud services like Twilio
+It is designed to be fast, minimal, and usable entirely through button input, without relying on external libraries.
 
-The upgrade made it possible to expand the project beyond gaming and turn it into a connected handheld system.
+---
 
-**Challenges**
-One of the biggest challenges was fitting everything into an Altoids tin while keeping it usable.
+## Weather System
 
-Other challenges included:
+The weather system connects to online APIs and retrieves live environmental data.
 
-* Designing a user interface for a small screen
-* Managing memory usage
-* Building multiple games
-* Implementing WiFi connectivity
-* Integrating SMS support
-* Organizing a growing codebase
+It includes:
+- current temperature
+- weather conditions (clear, cloudy, rain, etc.)
+- humidity levels
+- wind speed
+- air quality index (AQI when available from API source)
 
-**What I Learned**
+This system required careful formatting because weather APIs return large datasets that must be reduced into readable information for a small screen.
 
-This project taught me a lot about:
+---
 
-* Embedded systems
-* Arduino development
-* ESP32 networking
-* User interface design
-* API integration
-* Hardware and software integration
-* Game development
+## SMS Messaging (Twilio Integration)
 
-**Future Plans**
+The Mintyboy can send SMS messages using WiFi and the Twilio API.
 
-Some ideas for future improvements include:
+It supports:
+- sending text messages from the device
+- cloud-based authentication (SID and token handling)
+- configurable destination numbers
 
-* More games
-* Better password input for WiFi
-* Bluetooth communication features
-* Notifications
-* Improved battery life
-* Over-the-air updates
+This feature required careful handling of:
+- HTTP request formatting
+- authentication reliability
+- WiFi dependency before sending messages
 
-**AI Usage**
-Quite little AI was used to complete this project, AI was used to add comments and catch errors, not to edit or give ideas :)
+It effectively turns the device into a basic cloud-connected communication tool.
 
-Built For
+---
+
+## WiFi System
+
+WiFi is the foundation of all online features.
+
+It enables:
+- network scanning
+- connecting to WiFi networks
+- saving credentials
+- reconnecting automatically on boot
+
+All API-based systems depend on this module, so stability here directly affects everything else in the device.
+
+---
+
+## Bluetooth System
+
+The ESP32 Bluetooth system is included as a foundation for future expansion.
+
+It is currently used as:
+- a system capability layer
+- preparation for future device-to-device communication
+- potential external control or companion integration
+
+---
+
+## Settings System
+
+The device includes a full settings system that organizes all features into a structured interface.
+
+It includes:
+- WiFi management (scan, connect, save networks)
+- Bluetooth controls
+- display mode (light/dark)
+- system reset and data clearing
+- configuration tools for system behavior
+
+This system was necessary to prevent the device from becoming a flat collection of disconnected features.
+
+---
+
+## EEPROM Data Storage
+
+EEPROM is used for persistent storage across power cycles.
+
+It stores:
+- WiFi credentials
+- system settings
+- device state
+
+Without EEPROM, the system would reset on every reboot, making long-term use impossible.
+
+---
+
+## Hardware
+
+- Arduino Nano ESP32
+- ST7789 TFT display
+- Physical push buttons
+- Altoids tin enclosure
+- Battery power system
+
+The physical size constraint of the Altoids tin heavily influenced design decisions across the entire project. Every feature had to justify its memory, space, and processing cost.
+
+---
+
+## Wiring
+
+### Display Connections
+
+| Pin | ESP32 |
+|-----|------|
+| VCC | 3.3V |
+| GND | GND |
+| SCK | D13 |
+| MOSI | D11 |
+| CS | User defined |
+| DC | User defined |
+| RST | User defined |
+| BLK | 3.3V |
+
+---
+
+### Button Mapping
+
+| Function | Pin |
+|----------|-----|
+| Up       | D3 |
+| Down     | D5 |
+| Left     | D2 |
+| Right    | D4 |
+| Mode     | D6 |
+
+---
+
+## Hardware Limitations
+
+The project was heavily constrained by hardware throughout development.
+
+Main limitations included:
+- limited RAM causing feature conflicts
+- flash storage constraints limiting expansion
+- UI space restrictions due to small screen size
+- WiFi instability affecting all online systems
+- EEPROM size limitations
+- performance drops when multiple systems ran together
+
+A major part of development was constantly balancing features so the system remained stable rather than overloaded.
+
+---
+
+## Why I Switched to ESP32
+
+The original Arduino Nano was sufficient for early prototypes but quickly became limiting.
+
+Switching to the ESP32 enabled:
+- WiFi connectivity
+- Bluetooth support
+- significantly more memory
+- faster processing
+- support for multiple real-time APIs
+
+This upgrade is what made the full system possible.
+
+---
+
+## Challenges
+
+- fitting a full system into an Altoids tin
+- managing memory constraints across multiple features
+- designing a usable UI on a very small display
+- integrating multiple APIs (NASA, stocks, weather, Twilio)
+- keeping code organized as complexity increased
+- WiFi instability and reconnect handling
+- EEPROM debugging and data persistence issues
+- preventing system features from interfering with each other
+
+---
+
+## What I Learned
+
+- embedded systems are defined by constraints
+- memory management is critical in multi-feature devices
+- API integration on microcontrollers is non-trivial
+- UI design matters even more on small hardware
+- system architecture becomes essential as features scale
+- hardware limitations directly shape software design
+
+---
+
+## Future Improvements
+
+- more games and utilities
+- improved UI navigation system
+- better WiFi setup and stability handling
+- Bluetooth communication features
+- notification system
+- OTA updates
+- improved power efficiency
+- expanded stock and data dashboards
+
+---
+
+## AI Usage
+
+AI was not used to code at all, it was used a little to add comments in between (not the big on at the top of the code). It was not used to debug or fix code or write any at all. All code is handmade.
+
+---
+
+## Built For
 
 Hack Club Stardance Challenge
 
-Created by Arjun :) AKA eceWire.
+---
 
-Check you my YouTube Channel!
+## Creator
 
-https://www.youtube.com/@eceWire
+Arjun (eceWire)
+
+YouTube: https://www.youtube.com/@eceWire
