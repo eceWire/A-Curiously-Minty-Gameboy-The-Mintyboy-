@@ -300,6 +300,17 @@ This upgrade is what made the full system possible.
 
 ---
 
+## Story
+
+I had only one question in mind: how much can you fit inside an Altoids box? That is what allowed me to create this project. At first, I had NO idea what Arduino was, until, Mark Rober. I saw one of his videos on YouTube in school and I wondered, "what can I do with that?" And from that day, eceWire was born. I've been working with so many projects on these since 10 years old, and currently. This has been one of my most advanced projects EVER. After documenting a lot of this, someone texted me a few days ago.
+
+"Hey Arjun, I really like what you're doing, I'm running a club at the public library right now, I'll explain everything later, I promise it's not a scam!"
+
+I was very suspicious at first, and was not sure if I wanted to go. But I did anyways.
+
+The guy who messaged me ended up being somone who has given a TEDx before, and I thought that was just crazy! And currently, he's given me a spot in the TEDx in August to present the Mintyboy.
+
+So, this has probably been one of the best thing's that has happened to me in my life, so remember "don't let anyone stop you, let your wildest dreams come true :)" - Arjun aka eceWire
 ## AI Usage
 
 AI was not used to code at all, it was used a little to add comments in between (not the big on at the top of the code). It was not used to debug or fix code or write any at all. All code is handmade.
