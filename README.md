@@ -328,3 +328,11 @@ Hack Club Stardance Challenge
 Arjun (eceWire)
 
 YouTube: https://www.youtube.com/@eceWire
+
+<img width="152" height="203" alt="IMG_5057" src="https://github.com/user-attachments/assets/c17223cf-8e7a-473c-b32f-a6f04087cb50" />
+<img width="581" height="1033" alt="IMG_4996 MOV" src="https://github.com/user-attachments/assets/bda7cf39-6021-4f9a-8fdf-e6676d666dc0" />
+<img width="152" height="271" alt="IMG_5001 MOV" src="https://github.com/user-attachments/assets/521ad85b-3b54-48ec-860c-5e3e71ee0a7d" />
+<img width="775" height="1033" alt="IMG_4979" src="https://github.com/user-attachments/assets/5888fda7-f4ec-4fe4-805f-2710535899a0" />
+<img width="825" height="1033" alt="IMG_4954" src="https://github.com/user-attachments/assets/9d862e46-4c13-4b7a-bd04-8f3b27e98a7d" />
+<img width="959" height="719" alt="IMG_4950" src="https://github.com/user-attachments/assets/94eead8e-6f73-488d-9cf4-5ad1b6ba9f54" />
+
