@@ -1,32 +1,26 @@
 // ============================================================
-//  Combined Game Console + Weather Station + SMS Messenger
+//  Combined Game Console — Extended Edition
 //  Target: Arduino Nano ESP32 (ESP32-S3)
 //
-//  MENU: 2048 | Tetris | Pong | Weather | SMS | Settings
+//  MENU (9 items):
+//    Games | Weather | SMS | Timer | NASA | Stocks | News | Calc | Settings
 //
-//  SMS via Twilio REST API (WiFi required, no extra hardware):
-//    - Send SMS to any number
-//    - View Inbox: last 10 received messages polled from Twilio
-//    - Twilio credentials entered once in Settings > SMS tab
-//    - Credentials stored encrypted-at-rest in EEPROM
+//  GAMES (8 total):
+//    2048 | Tetris | Pong | Flappy Bird | Snake | Breakout | Minesweeper | Simon Says
 //
-//  Settings tabs: Storage | WiFi | BLE | Theme | SMS
+//  FEATURES:
+//    Weather + Air Quality Index (AQI via Open-Meteo, no key needed)
+//    SMS via Twilio REST API
+//    NASA Explorer: Planets | Moons | Artemis II | APOD
+//    Stock Ticker: search any ticker, price + 5-day chart (Yahoo Finance)
+//    News Headlines: BBC World RSS feed (no API key needed)
+//    Calculator: full arithmetic with history line
+//    Stopwatch with lap recording
+//    Passive Buzzer: sound effects for games and alerts
 //
-//  MENU navigation:
-//    BTN_LEFT / BTN_RIGHT — cycle options
-//    BTN_DOWN             — select
-//
-//  In-game:
-//    2048   : LEFT/RIGHT/UP/DOWN slides tiles
-//    Tetris : LEFT=left  UP=rotate  RIGHT=right  DOWN=soft drop
-//    Pong   : BTN_LEFT=paddle up   BTN_UP=paddle down   (vs CPU)
-//    Hold BTN_MODE ~1 sec → return to menu
-//
-//  Text entry keyboard:
-//    UP / DOWN  — cycle through characters
-//    RIGHT      — add selected character
-//    LEFT       — backspace
-//    Hold MODE 1.5 s — confirm / done
+//  BUZZER WIRING:
+//    Buzzer + leg → Pin 7    Buzzer – leg → GND
+//    (Comment out BUZZER_PIN if no buzzer is attached)
 //
 //  LIBRARIES (install via Arduino Library Manager):
 //    Adafruit ST7789   Adafruit GFX
@@ -39,13 +33,12 @@
 #include <EEPROM.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <BLEDevice.h>
 #include <BLEAdvertising.h>
 
 // ======================================================
-//  DISPLAY PINS — change to match your wiring
-//  Config A (original 2048 wiring): CS=10  DC=9   RST=8
-//  Config B (Tetris/Pong wiring):   CS=8   DC=10  RST=9
+//  DISPLAY PINS
 // ======================================================
 #define TFT_CS   8
 #define TFT_DC   10
@@ -57,32 +50,37 @@ Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
 #define SCREEN_HEIGHT 240
 
 // ======================================================
-//  BUTTONS  (connect one leg to pin, other leg to GND)
+//  BUTTONS
 // ======================================================
-#define BTN_LEFT   2
-#define BTN_UP     3
+#define BTN_LEFT   3
+#define BTN_UP     2
 #define BTN_RIGHT  4
 #define BTN_DOWN   5
 #define BTN_MODE   6
 
 // ======================================================
-//  EEPROM
-//  E2END is AVR-only and does NOT exist on ESP32.
-//  Hardcode the size and call EEPROM.begin() / commit().
+//  PASSIVE BUZZER
+//  Comment out the #define if no buzzer is attached.
+// ======================================================
+#define BUZZER_PIN 7
+
+// ======================================================
+//  EEPROM  (ESP32: always call EEPROM.begin() first)
 // ======================================================
 #define EE_TOTAL      512
-#define EE_MAGIC_ADDR  0    // 2 bytes  — save validity check
+#define EE_MAGIC_ADDR  0    // 2 bytes
 #define EE_BEST_ADDR   2    // 4 bytes  — 2048 best score
-#define EE_SSID_ADDR   6    // 34 bytes — saved WiFi SSID
-#define EE_PASS_ADDR   40   // 66 bytes — saved WiFi password
+#define EE_SSID_ADDR   6    // 34 bytes — WiFi SSID
+#define EE_PASS_ADDR   40   // 66 bytes — WiFi password
 #define EE_THEME_ADDR  106  // 1 byte   — 0=dark  1=light
-#define EE_BLE_ADDR    107  // 1 byte   — 0=off   1=advertising
-#define EE_CITY_ADDR   108  // 34 bytes — weather city name
-// Twilio credentials (142 .. 511)
-#define EE_TW_SID_ADDR 142  // 36 bytes — Twilio Account SID (AC...)
-#define EE_TW_TOK_ADDR 178  // 34 bytes — Twilio Auth Token
-#define EE_TW_FROM_ADDR 212 // 18 bytes — Twilio "From" phone (+1xxxxxxxxxx)
-#define EE_TW_TO_ADDR  230  // 18 bytes — last-used "To" phone
+#define EE_BLE_ADDR    107  // 1 byte   — 0=off   1=on
+#define EE_CITY_ADDR   108  // 34 bytes — weather city
+#define EE_TW_SID_ADDR 142  // 36 bytes — Twilio SID
+#define EE_TW_TOK_ADDR 178  // 34 bytes — Twilio token
+#define EE_TW_FROM_ADDR 212 // 18 bytes — Twilio from
+#define EE_TW_TO_ADDR  230  // 18 bytes — Twilio last-to
+#define EE_FB_ADDR     256  // 10 bytes — Flappy Bird top-5
+#define EE_STOCK_ADDR  270  // 12 bytes — last stock symbol
 #define EE_MAGIC_0     0x20
 #define EE_MAGIC_1     0x48
 
@@ -90,8 +88,13 @@ Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
 //  GLOBAL STATE
 // ======================================================
 enum GameState {
-  STATE_MENU, STATE_2048, STATE_TETRIS, STATE_PONG,
-  STATE_SETTINGS, STATE_WEATHER, STATE_SMS
+  STATE_MENU,
+  STATE_GAMES,
+  STATE_2048, STATE_TETRIS, STATE_PONG, STATE_FLAPPY,
+  STATE_SNAKE, STATE_BREAKOUT, STATE_MINESWEEPER, STATE_SIMON,
+  STATE_WEATHER, STATE_SMS,
+  STATE_STOPWATCH, STATE_SETTINGS, STATE_NASA,
+  STATE_STOCKS, STATE_NEWS, STATE_CALC
 };
 GameState currentState = STATE_MENU;
 
@@ -109,67 +112,78 @@ char savedSSID[34]   = {0};
 char savedPass[66]   = {0};
 char weatherCity[34] = "London";
 
-// Twilio SMS credentials
-char twSID[36]  = {0};   // Account SID  (AC...)
-char twToken[34] = {0};  // Auth Token
-char twFrom[18] = {0};   // Your Twilio number  e.g. +12025551234
-char twLastTo[18] = {0}; // Last-used destination number
+// Twilio SMS
+char twSID[36]   = {0};
+char twToken[34] = {0};
+char twFrom[18]  = {0};
+char twLastTo[18]= {0};
 
-// 2048 best score (declared early — used in ee_loadAll)
+// Stocks
+char lastStockSym[12] = "AAPL";
+
+// 2048 best score
 uint32_t g_bestScore = 0;
 
-// Weather data struct — declared early so fetchWeather() return type is visible
+// Data structs
 struct WeatherData {
   String temp, feelsLike, humidity, uvIndex, windSpeed, condition, precip, pressure;
   bool valid;
 };
+struct SmsMsg { String from, body, date; };
+struct APODData { String title, date, explanation, url; bool valid; };
+struct AQIData  { int aqi, pm10_i, pm25_i; float lat, lon; bool valid; };
+struct StockData { String symbol, name, price, change, changePct, currency; float closes[5]; int closeCount; bool valid; };
 
-// SMS inbox message struct — declared early so twilioFetchInbox() signature is visible
-struct SmsMsg {
-  String from;
-  String body;
-  String date;
-};
-
-// Forward declarations — functions defined later in the file
+// Forward declarations
 WeatherData fetchWeather(const String& city);
 int twilioFetchInbox(SmsMsg* msgs, int maxCount);
+AQIData fetchAQI();
+StockData fetchStock(const String& sym);
 
 // ======================================================
 //  THEME
 // ======================================================
 void applyTheme() {
   if (darkTheme) {
-    COL_BG     = ST77XX_BLACK;
-    COL_FG     = ST77XX_WHITE;
-    COL_DIM    = 0x4208;
-    COL_ACCENT = 0x8410;
-    COL_CARD   = 0x1082;
+    COL_BG = ST77XX_BLACK; COL_FG = ST77XX_WHITE;
+    COL_DIM = 0x4208; COL_ACCENT = 0x8410; COL_CARD = 0x1082;
   } else {
-    COL_BG     = ST77XX_WHITE;
-    COL_FG     = 0x0841;
-    COL_DIM    = 0xC618;
-    COL_ACCENT = 0x7BEF;
-    COL_CARD   = 0xDEDB;
+    COL_BG = ST77XX_WHITE; COL_FG = 0x0841;
+    COL_DIM = 0xC618; COL_ACCENT = 0x7BEF; COL_CARD = 0xDEDB;
   }
+}
+
+// ======================================================
+//  PASSIVE BUZZER HELPERS
+// ======================================================
+void buzz(int freq, int dur) {
+#ifdef BUZZER_PIN
+  tone(BUZZER_PIN, freq, dur);
+  delay(dur + 5);
+  noTone(BUZZER_PIN);
+#else
+  delay(dur);
+#endif
+}
+void buzzClick()   { buzz(1200, 20); }
+void buzzOK()      { buzz(880, 60); delay(40); buzz(1320, 80); }
+void buzzFail()    { buzz(220, 180); }
+void buzzPoints()  { buzz(1047, 40); delay(20); buzz(1319, 60); }
+void buzzWin()     { for (int f : {523,659,784,1047}) { buzz(f, 80); delay(20); } }
+void buzzGameOver(){ buzz(330,120); delay(60); buzz(220,200); }
+void buzzSimon(int c) {
+  int freqs[4] = {262, 330, 392, 523};
+  if (c >= 0 && c < 4) buzz(freqs[c], 200);
 }
 
 // ======================================================
 //  BLE HELPERS
 // ======================================================
 void bleStart() {
-  if (!bleInitDone) {
-    BLEDevice::init("NanoESP32-Games");
-    pBLEAdvert = BLEDevice::getAdvertising();
-    bleInitDone = true;
-  }
+  if (!bleInitDone) { BLEDevice::init("NanoESP32-Games"); pBLEAdvert = BLEDevice::getAdvertising(); bleInitDone = true; }
   if (pBLEAdvert) { pBLEAdvert->start(); bleAdvertising = true; }
 }
-
-void bleStop() {
-  if (pBLEAdvert) { pBLEAdvert->stop(); bleAdvertising = false; }
-}
-
+void bleStop()  { if (pBLEAdvert) { pBLEAdvert->stop(); bleAdvertising = false; } }
 String bleAddress() {
   if (!bleInitDone) { BLEDevice::init("NanoESP32-Games"); bleInitDone = true; }
   return String(BLEDevice::getAddress().toString().c_str());
@@ -179,66 +193,43 @@ String bleAddress() {
 //  EEPROM HELPERS
 // ======================================================
 bool ee_valid() {
-  return EEPROM.read(EE_MAGIC_ADDR)   == EE_MAGIC_0 &&
-         EEPROM.read(EE_MAGIC_ADDR+1) == EE_MAGIC_1;
+  return EEPROM.read(EE_MAGIC_ADDR)==EE_MAGIC_0 && EEPROM.read(EE_MAGIC_ADDR+1)==EE_MAGIC_1;
 }
-
 void ee_writeMagic() {
-  EEPROM.write(EE_MAGIC_ADDR,   EE_MAGIC_0);
-  EEPROM.write(EE_MAGIC_ADDR+1, EE_MAGIC_1);
-  EEPROM.commit();
+  EEPROM.write(EE_MAGIC_ADDR, EE_MAGIC_0); EEPROM.write(EE_MAGIC_ADDR+1, EE_MAGIC_1); EEPROM.commit();
 }
-
 void ee_writeStr(int addr, const char* s, int maxLen) {
-  for (int i = 0; i < maxLen-1; i++) {
-    EEPROM.write(addr+i, (uint8_t)s[i]);
-    if (!s[i]) break;
-  }
-  EEPROM.write(addr+maxLen-1, 0);
-  EEPROM.commit();
+  for (int i = 0; i < maxLen-1; i++) { EEPROM.write(addr+i,(uint8_t)s[i]); if (!s[i]) break; }
+  EEPROM.write(addr+maxLen-1, 0); EEPROM.commit();
 }
-
 void ee_readStr(int addr, char* buf, int maxLen) {
-  for (int i = 0; i < maxLen; i++) {
-    buf[i] = (char)EEPROM.read(addr+i);
-    if (!buf[i]) break;
-  }
-  buf[maxLen-1] = 0;
+  for (int i = 0; i < maxLen; i++) { buf[i]=(char)EEPROM.read(addr+i); if (!buf[i]) break; }
+  buf[maxLen-1]=0;
 }
-
 void ee_loadAll() {
   if (!ee_valid()) return;
   g_bestScore = (uint32_t)EEPROM.read(EE_BEST_ADDR)
-              | (uint32_t)EEPROM.read(EE_BEST_ADDR+1) << 8
-              | (uint32_t)EEPROM.read(EE_BEST_ADDR+2) << 16
-              | (uint32_t)EEPROM.read(EE_BEST_ADDR+3) << 24;
+              | (uint32_t)EEPROM.read(EE_BEST_ADDR+1)<<8
+              | (uint32_t)EEPROM.read(EE_BEST_ADDR+2)<<16
+              | (uint32_t)EEPROM.read(EE_BEST_ADDR+3)<<24;
   ee_readStr(EE_SSID_ADDR,    savedSSID,    34);
   ee_readStr(EE_PASS_ADDR,    savedPass,    66);
   ee_readStr(EE_CITY_ADDR,    weatherCity,  34);
-  if (weatherCity[0] == 0) strcpy(weatherCity, "London");
+  if (weatherCity[0]==0) strcpy(weatherCity,"London");
   ee_readStr(EE_TW_SID_ADDR,  twSID,        36);
   ee_readStr(EE_TW_TOK_ADDR,  twToken,      34);
   ee_readStr(EE_TW_FROM_ADDR, twFrom,       18);
   ee_readStr(EE_TW_TO_ADDR,   twLastTo,     18);
-  darkTheme      = (EEPROM.read(EE_THEME_ADDR) != 1);
-  bleAdvertising = (EEPROM.read(EE_BLE_ADDR)   == 1);
+  ee_readStr(EE_STOCK_ADDR,   lastStockSym, 12);
+  if (lastStockSym[0]==0) strcpy(lastStockSym,"AAPL");
+  darkTheme      = (EEPROM.read(EE_THEME_ADDR)!=1);
+  bleAdvertising = (EEPROM.read(EE_BLE_ADDR)==1);
 }
-
-int ee_countUsed() {
-  int n = 0;
-  for (int i = 0; i < EE_TOTAL; i++)
-    if (EEPROM.read(i) != 0xFF) n++;
-  return n;
-}
-
+int  ee_countUsed() { int n=0; for(int i=0;i<EE_TOTAL;i++) if(EEPROM.read(i)!=0xFF)n++; return n; }
 void ee_eraseAll() {
-  for (int i = 0; i < EE_TOTAL; i++) EEPROM.write(i, 0xFF);
-  EEPROM.commit();
-  g_bestScore = 0;
-  savedSSID[0] = savedPass[0] = 0;
-  darkTheme = true; bleAdvertising = false;
-  strcpy(weatherCity, "London");
-  applyTheme();
+  for (int i=0;i<EE_TOTAL;i++) EEPROM.write(i,0xFF); EEPROM.commit();
+  g_bestScore=0; savedSSID[0]=savedPass[0]=0; darkTheme=true; bleAdvertising=false;
+  strcpy(weatherCity,"London"); strcpy(lastStockSym,"AAPL"); applyTheme();
 }
 
 // ======================================================
@@ -248,174 +239,88 @@ unsigned long _lastDebounce = 0;
 const unsigned long DEBOUNCE_MS = 160;
 
 bool btnPressed(int pin) {
-  if (digitalRead(pin) == LOW) {
+  if (digitalRead(pin)==LOW) {
     unsigned long t = millis();
-    if (t - _lastDebounce > DEBOUNCE_MS) {
-      _lastDebounce = t;
-      while (digitalRead(pin) == LOW) delay(5);
+    if (t-_lastDebounce>DEBOUNCE_MS) {
+      _lastDebounce=t;
+      while (digitalRead(pin)==LOW) delay(5);
       return true;
     }
   }
   return false;
 }
-
 bool anyBtnPressed() {
-  return digitalRead(BTN_LEFT)  == LOW || digitalRead(BTN_UP)    == LOW ||
-         digitalRead(BTN_RIGHT) == LOW || digitalRead(BTN_DOWN)  == LOW ||
-         digitalRead(BTN_MODE)  == LOW;
+  return digitalRead(BTN_LEFT)==LOW||digitalRead(BTN_UP)==LOW||
+         digitalRead(BTN_RIGHT)==LOW||digitalRead(BTN_DOWN)==LOW||
+         digitalRead(BTN_MODE)==LOW;
 }
 void waitAllReleased() { while (anyBtnPressed()) delay(10); }
 void waitAnyPress()    { waitAllReleased(); while (!anyBtnPressed()) delay(10); waitAllReleased(); }
 
 // ======================================================
-//  TEXT ENTRY — on-screen character wheel
-//  UP/DOWN = cycle char   RIGHT = add char   LEFT = backspace
-//  Hold MODE 1.5 s = confirm and return entered string
-// ======================================================
-// ======================================================
-//  GRID KEYBOARD
-//  Layout: 5 rows of 10 chars (QWERTY-style) + special row
-//  UP/DOWN = move row   LEFT/RIGHT = move column
-//  MODE tap = type that key   MODE hold 1.5s = done/confirm
-//  Password mode: shows *** instead of typed chars
+//  GRID KEYBOARD (QWERTY-style)
 // ======================================================
 const char* KB_NORM[5] = {
-  "1234567890",
-  "qwertyuiop",
-  "asdfghjkl-",
-  "zxcvbnm,.!",
-  "@#$%&*+=?/"
+  "1234567890","qwertyuiop","asdfghjkl-","zxcvbnm,.!","@#$%&*+=?/"
 };
 const char* KB_SHFT[5] = {
-  "1234567890",
-  "QWERTYUIOP",
-  "ASDFGHJKL-",
-  "ZXCVBNM,.!",
-  "@#$%&*+=?/"
+  "1234567890","QWERTYUIOP","ASDFGHJKL-","ZXCVBNM,.!","@#$%&*+=?/"
 };
 
-String textEntry(const char* prompt, const char* initial, bool hideInput = false) {
-  const int NUM_ROWS  = 5;
-  const int NUM_COLS  = 10;
-  const int SPEC_ROW  = 5;
-  const int NUM_SPEC  = 4;
+String textEntry(const char* prompt, const char* initial, bool hideInput=false) {
+  const int NUM_ROWS=5,NUM_COLS=10,SPEC_ROW=5,NUM_SPEC=4;
+  bool shifted=false; String result=String(initial); int curRow=1,curCol=0;
+  const int KB_X=1,KB_Y=30,CW=23,CH=20,GAP=1;
+  const int SPEC_Y=KB_Y+NUM_ROWS*(CH+GAP)+3;
+  const int SW[4]={79,51,51,57};
 
-  bool   shifted = false;
-  String result  = String(initial);
-  int    curRow  = 1, curCol = 0;
-
-  const int KB_X   = 1;
-  const int KB_Y   = 30;
-  const int CW     = 23;
-  const int CH     = 20;
-  const int GAP    = 1;
-  const int SPEC_Y = KB_Y + NUM_ROWS * (CH + GAP) + 3;
-  const int SW[4]  = { 79, 51, 51, 57 };
-
-  auto drawKB = [&]() {
+  auto drawKB=[&](){
     tft.fillScreen(COL_BG);
-
     tft.setTextColor(COL_FG); tft.setTextSize(1);
-    char pb[38]; strncpy(pb, prompt, 37); pb[37] = 0;
-    tft.setCursor(3, 3); tft.print(pb);
-
-    tft.fillRoundRect(2, 13, 236, 15, 2, COL_CARD);
-    tft.drawRoundRect(2, 13, 236, 15, 2, COL_DIM);
-    tft.setTextColor(ST77XX_CYAN); tft.setTextSize(1);
-    tft.setCursor(5, 18);
-    if (hideInput) {
-      int shown = min((int)result.length(), 37);
-      for (int i = 0; i < shown; i++) tft.print('*');
-    } else {
-      String disp = result;
-      if (disp.length() > 37) disp = disp.substring(disp.length() - 37);
-      tft.print(disp);
-    }
+    char pb[38]; strncpy(pb,prompt,37); pb[37]=0;
+    tft.setCursor(3,3); tft.print(pb);
+    tft.fillRoundRect(2,13,236,15,2,COL_CARD);
+    tft.drawRoundRect(2,13,236,15,2,COL_DIM);
+    tft.setTextColor(ST77XX_CYAN); tft.setTextSize(1); tft.setCursor(5,18);
+    if (hideInput) { int sh=min((int)result.length(),37); for(int i=0;i<sh;i++) tft.print('*'); }
+    else { String d=result; if(d.length()>37) d=d.substring(d.length()-37); tft.print(d); }
     tft.setTextColor(ST77XX_WHITE); tft.print('|');
-
-    const char** kb = shifted ? KB_SHFT : KB_NORM;
-    for (int r = 0; r < NUM_ROWS; r++) {
-      for (int c = 0; c < NUM_COLS; c++) {
-        int x   = KB_X + c * (CW + GAP);
-        int y   = KB_Y + r * (CH + GAP);
-        bool sel = (curRow == r && curCol == c);
-        tft.fillRect(x, y, CW, CH, sel ? ST77XX_BLUE : COL_CARD);
-        if (sel) tft.drawRect(x, y, CW, CH, ST77XX_WHITE);
-        tft.setTextColor(sel ? ST77XX_WHITE : COL_FG); tft.setTextSize(1);
-        tft.setCursor(x + (CW - 6) / 2, y + (CH - 8) / 2);
-        tft.print(kb[r][c]);
-      }
+    const char** kb=shifted?KB_SHFT:KB_NORM;
+    for (int r=0;r<NUM_ROWS;r++) for (int c=0;c<NUM_COLS;c++) {
+      int x=KB_X+c*(CW+GAP),y=KB_Y+r*(CH+GAP); bool sel=(curRow==r&&curCol==c);
+      tft.fillRect(x,y,CW,CH,sel?ST77XX_BLUE:COL_CARD);
+      if(sel) tft.drawRect(x,y,CW,CH,ST77XX_WHITE);
+      tft.setTextColor(sel?ST77XX_WHITE:COL_FG); tft.setTextSize(1);
+      tft.setCursor(x+(CW-6)/2,y+(CH-8)/2); tft.print(kb[r][c]);
     }
-
-    const char*  spLbl[4] = { "SPACE", "CAPS", "DEL", "DONE" };
-    uint16_t     spBg[4]  = {
-      COL_CARD,
-      (uint16_t)(shifted ? ST77XX_ORANGE : COL_CARD),
-      (uint16_t)0x8000,
-      (uint16_t)0x0410
-    };
-    int sx = 2;
-    for (int i = 0; i < NUM_SPEC; i++) {
-      bool sel = (curRow == SPEC_ROW && curCol == i);
-      tft.fillRoundRect(sx, SPEC_Y, SW[i] - 2, CH, 3, sel ? ST77XX_BLUE : spBg[i]);
-      if (sel) tft.drawRoundRect(sx, SPEC_Y, SW[i] - 2, CH, 3, ST77XX_WHITE);
-      tft.setTextColor(sel ? ST77XX_WHITE : (i == 3 ? ST77XX_WHITE : COL_FG));
-      tft.setTextSize(1);
-      int lw = strlen(spLbl[i]) * 6;
-      tft.setCursor(sx + (SW[i] - 2 - lw) / 2, SPEC_Y + (CH - 8) / 2);
-      tft.print(spLbl[i]);
-      sx += SW[i];
+    const char* spLbl[4]={"SPACE","CAPS","DEL","DONE"};
+    uint16_t spBg[4]={COL_CARD,(uint16_t)(shifted?ST77XX_ORANGE:COL_CARD),(uint16_t)0x8000,(uint16_t)0x0410};
+    int sx=2;
+    for (int i=0;i<NUM_SPEC;i++) {
+      bool sel=(curRow==SPEC_ROW&&curCol==i);
+      tft.fillRoundRect(sx,SPEC_Y,SW[i]-2,CH,3,sel?ST77XX_BLUE:spBg[i]);
+      if(sel) tft.drawRoundRect(sx,SPEC_Y,SW[i]-2,CH,3,ST77XX_WHITE);
+      tft.setTextColor(sel?ST77XX_WHITE:(i==3?ST77XX_WHITE:COL_FG)); tft.setTextSize(1);
+      int lw=strlen(spLbl[i])*6;
+      tft.setCursor(sx+(SW[i]-2-lw)/2,SPEC_Y+(CH-8)/2); tft.print(spLbl[i]); sx+=SW[i];
     }
-
     tft.setTextColor(COL_DIM); tft.setTextSize(1);
-    tft.setCursor(3, 230);
-    tft.print("D-pad=navigate  MODE=type  hold=done");
+    tft.setCursor(3,230); tft.print("D-pad=navigate  MODE=type  hold=done");
   };
 
   drawKB();
-
   while (true) {
-    bool moved = false;
-    if (btnPressed(BTN_UP)) {
-      if      (curRow == SPEC_ROW)    { curRow = NUM_ROWS - 1; if (curCol >= NUM_COLS) curCol = NUM_COLS - 1; }
-      else if (curRow > 0)            { curRow--; }
-      moved = true;
-    }
-    if (btnPressed(BTN_DOWN)) {
-      if      (curRow < NUM_ROWS - 1) { curRow++; }
-      else if (curRow == NUM_ROWS - 1){ curRow = SPEC_ROW; if (curCol >= NUM_SPEC) curCol = 0; }
-      moved = true;
-    }
-    if (btnPressed(BTN_LEFT)) {
-      int cols = (curRow == SPEC_ROW) ? NUM_SPEC : NUM_COLS;
-      curCol = (curCol + cols - 1) % cols;
-      moved = true;
-    }
-    if (btnPressed(BTN_RIGHT)) {
-      int cols = (curRow == SPEC_ROW) ? NUM_SPEC : NUM_COLS;
-      curCol = (curCol + 1) % cols;
-      moved = true;
-    }
+    bool moved=false;
+    if (btnPressed(BTN_UP))   { if(curRow==SPEC_ROW){curRow=NUM_ROWS-1;if(curCol>=NUM_COLS)curCol=NUM_COLS-1;}else if(curRow>0)curRow--; moved=true; }
+    if (btnPressed(BTN_DOWN)) { if(curRow<NUM_ROWS-1)curRow++;else if(curRow==NUM_ROWS-1){curRow=SPEC_ROW;if(curCol>=NUM_SPEC)curCol=0;} moved=true; }
+    if (btnPressed(BTN_LEFT)) { int cols=(curRow==SPEC_ROW)?NUM_SPEC:NUM_COLS; curCol=(curCol+cols-1)%cols; moved=true; }
+    if (btnPressed(BTN_RIGHT)){ int cols=(curRow==SPEC_ROW)?NUM_SPEC:NUM_COLS; curCol=(curCol+1)%cols;     moved=true; }
     if (moved) drawKB();
-
-    if (digitalRead(BTN_MODE) == LOW) {
-      unsigned long t0 = millis();
-      while (digitalRead(BTN_MODE) == LOW) {
-        if (millis() - t0 > 1500) { waitAllReleased(); return result; }
-        delay(10);
-      }
-      if (curRow < NUM_ROWS) {
-        const char** kb = shifted ? KB_SHFT : KB_NORM;
-        if (result.length() < 63) result += kb[curRow][curCol];
-        shifted = false;
-      } else {
-        switch (curCol) {
-          case 0: if (result.length() < 63) result += ' ';                   break;
-          case 1: shifted = !shifted;                                          break;
-          case 2: if (result.length() > 0) result.remove(result.length()-1); break;
-          case 3: return result;
-        }
-      }
+    if (digitalRead(BTN_MODE)==LOW) {
+      unsigned long t0=millis();
+      while (digitalRead(BTN_MODE)==LOW) { if(millis()-t0>1500){waitAllReleased();return result;} delay(10); }
+      if (curRow<NUM_ROWS) { const char** kb=shifted?KB_SHFT:KB_NORM; if(result.length()<63)result+=kb[curRow][curCol]; shifted=false; }
+      else { switch(curCol){ case 0:if(result.length()<63)result+=' ';break; case 1:shifted=!shifted;break; case 2:if(result.length()>0)result.remove(result.length()-1);break; case 3:return result; } }
       drawKB();
     }
     delay(10);
@@ -423,667 +328,446 @@ String textEntry(const char* prompt, const char* initial, bool hideInput = false
 }
 
 // ======================================================
-//  MENU  (6 items: 2048 | Tetris | Pong | Weather | SMS | Settings)
+//  MENU  (9 items, compact cards)
 // ======================================================
-const char*    menuNames[]  = { "2048", "Tetris", "Pong", "Weather", "SMS", "Settings" };
-const uint16_t menuColors[] = { 0xEAC0, ST77XX_CYAN, ST77XX_GREEN, 0x051F, 0xF81F, 0xC618 };
-const int NUM_ITEMS = 6;
+const char* menuNames[] = {
+  "Games","Weather","SMS","Timer","NASA","Stocks","News","Calc","Settings"
+};
+const uint16_t menuColors[] = {
+  0xEAC0, 0x051F, 0xF81F, 0x07E0, 0x051D, 0x04E0, 0xFD20, 0x7BEF, 0xC618
+};
+const int NUM_ITEMS = 9;
 int menuSel = 0;
 
 void drawMenuClock() {
-  struct tm t;
-  if (!getLocalTime(&t, 0)) return;  // non-blocking; skip if not synced yet
-  char timebuf[10];
-  strftime(timebuf, sizeof(timebuf), "%I:%M %p", &t);  // "02:34 PM"
-  char datebuf[12];
-  strftime(datebuf, sizeof(datebuf), "%a %b %d", &t);  // "Sat Jun 14"
-  // Top-right: time (clear 88x14 px area to avoid ghosting)
-  tft.fillRect(152, 2, 88, 14, COL_BG);
+  struct tm t; if (!getLocalTime(&t,0)) return;
+  char timebuf[10]; strftime(timebuf,sizeof(timebuf),"%I:%M %p",&t);
+  char datebuf[12]; strftime(datebuf,sizeof(datebuf),"%a %b %d",&t);
+  tft.fillRect(152,2,88,14,COL_BG);
   tft.setTextColor(ST77XX_YELLOW); tft.setTextSize(1);
-  tft.setCursor(156, 6); tft.print(timebuf);
-  // Right of WiFi row: date
-  tft.fillRect(140, 34, 100, 10, COL_BG);
+  tft.setCursor(156,6); tft.print(timebuf);
+  tft.fillRect(140,34,100,10,COL_BG);
   tft.setTextColor(ST77XX_CYAN); tft.setTextSize(1);
-  tft.setCursor(142, 34); tft.print(datebuf);
+  tft.setCursor(142,34); tft.print(datebuf);
 }
 
 void drawMenu() {
   tft.fillScreen(COL_BG);
   tft.setTextSize(2); tft.setTextColor(COL_FG);
-  tft.setCursor(20, 2); tft.print("GAME SELECT");
+  tft.setCursor(36,2); tft.print("GAME SELECT");
   tft.setTextSize(1); tft.setTextColor(COL_ACCENT);
-  tft.setCursor(14, 22); tft.print("< L/R > browse    DOWN = enter");
-
-  bool wfConn = (WiFi.status() == WL_CONNECTED);
-  tft.setTextColor(wfConn ? ST77XX_GREEN : COL_DIM);
-  tft.setCursor(6, 34);
+  tft.setCursor(14,22); tft.print("< L/R > browse    DOWN = enter");
+  bool wfConn=(WiFi.status()==WL_CONNECTED);
+  tft.setTextColor(wfConn?ST77XX_GREEN:COL_DIM);
+  tft.setCursor(6,34);
   if (wfConn) { tft.print("WiFi: "); tft.print(WiFi.SSID()); }
-  else         { tft.print("WiFi: disconnected"); }
-
-  // 6 items — 32 px cards with 2 px gap, starting at y=44
-  for (int i = 0; i < NUM_ITEMS; i++) {
-    int cX=8, cY=44+i*33, cW=224, cH=28;
-    bool sel = (i == menuSel);
-    uint16_t bg  = sel ? menuColors[i] : COL_CARD;
-    uint16_t fg  = sel ? ST77XX_BLACK  : COL_FG;
-    uint16_t bdr = sel ? ST77XX_WHITE  : COL_DIM;
+  else          tft.print("WiFi: disconnected");
+  // 9 compact cards, 20px each, 2px gap, starting at y=44
+  for (int i=0;i<NUM_ITEMS;i++) {
+    int cX=8,cY=44+i*22,cW=224,cH=20;
+    bool sel=(i==menuSel);
+    uint16_t bg=sel?menuColors[i]:COL_CARD, fg=sel?ST77XX_BLACK:COL_FG, bdr=sel?ST77XX_WHITE:COL_DIM;
     tft.fillRoundRect(cX,cY,cW,cH,4,bg);
     tft.drawRoundRect(cX,cY,cW,cH,4,bdr);
     tft.setTextSize(1); tft.setTextColor(fg);
-    // Use size-2 text for short names, size-1 for longer
-    uint8_t ts = (strlen(menuNames[i]) <= 8) ? 2 : 1;
+    uint8_t ts=(strlen(menuNames[i])<=6)?2:1;
     tft.setTextSize(ts);
-    int tx = cX + (cW - (int)strlen(menuNames[i])*6*ts) / 2;
-    int ty = cY + (cH - 8*ts) / 2;
-    tft.setCursor(tx, ty); tft.print(menuNames[i]);
+    int tx=cX+(cW-(int)strlen(menuNames[i])*6*ts)/2;
+    int ty=cY+(cH-8*ts)/2;
+    tft.setCursor(tx,ty); tft.print(menuNames[i]);
   }
 }
 
 void runMenu() {
   applyTheme(); drawMenu(); drawMenuClock();
-  unsigned long lastClockMs = 0;
+  unsigned long lastClockMs=0;
   while (true) {
-    unsigned long nowMs = millis();
-    if (nowMs - lastClockMs >= 1000) { drawMenuClock(); lastClockMs = nowMs; }
+    unsigned long nowMs=millis();
+    if (nowMs-lastClockMs>=1000) { drawMenuClock(); lastClockMs=nowMs; }
     if (btnPressed(BTN_LEFT))  { menuSel=(menuSel+NUM_ITEMS-1)%NUM_ITEMS; drawMenu(); drawMenuClock(); lastClockMs=millis(); }
     if (btnPressed(BTN_RIGHT)) { menuSel=(menuSel+1)%NUM_ITEMS;           drawMenu(); drawMenuClock(); lastClockMs=millis(); }
-    if (btnPressed(BTN_DOWN) || btnPressed(BTN_UP) || btnPressed(BTN_MODE)) break;
+    if (btnPressed(BTN_DOWN)||btnPressed(BTN_UP)||btnPressed(BTN_MODE)) break;
     delay(10);
   }
   switch (menuSel) {
-    case 0: currentState = STATE_2048;     break;
-    case 1: currentState = STATE_TETRIS;   break;
-    case 2: currentState = STATE_PONG;     break;
-    case 3: currentState = STATE_WEATHER;  break;
-    case 4: currentState = STATE_SMS;      break;
-    case 5: currentState = STATE_SETTINGS; break;
+    case 0: currentState=STATE_GAMES;     break;
+    case 1: currentState=STATE_WEATHER;   break;
+    case 2: currentState=STATE_SMS;       break;
+    case 3: currentState=STATE_STOPWATCH; break;
+    case 4: currentState=STATE_NASA;      break;
+    case 5: currentState=STATE_STOCKS;    break;
+    case 6: currentState=STATE_NEWS;      break;
+    case 7: currentState=STATE_CALC;      break;
+    case 8: currentState=STATE_SETTINGS;  break;
   }
 }
 
 String enterPassword(const String& ssid) {
-  String prompt = "Password for: " + ssid;
-  return textEntry(prompt.c_str(), "", true);
+  String p="Password for: "+ssid; return textEntry(p.c_str(),"",true);
 }
 
 // ======================================================
-//  WIFI SCANNER + PASSWORD ENTRY
+//  WIFI SCANNER
 // ======================================================
 void runWifiSettings() {
-  int n = 0;
-
+  int n=0;
   doScan:
-  tft.fillScreen(COL_BG);
-  tft.setTextColor(COL_FG); tft.setTextSize(2);
-  tft.setCursor(22, 26); tft.print("Scanning WiFi");
-  tft.setTextSize(1); tft.setTextColor(COL_ACCENT);
-  tft.setCursor(20, 58); tft.print("Please wait...");
-
-  // Properly reset radio before scanning
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();   // single-arg: just disconnect, keep radio alive
-  delay(1500);         // give radio time to settle
-
-  n = WiFi.scanNetworks(false, true); // false=blocking, true=show hidden
-
-  if (n <= 0) {
-    tft.fillScreen(COL_BG);
-    tft.setTextColor(ST77XX_RED); tft.setTextSize(1);
-    tft.setCursor(10, 80);  tft.print("No networks found.");
-    tft.setTextColor(COL_FG);
-    tft.setCursor(10, 102); tft.print("Tips:");
-    tft.setCursor(10, 116); tft.print("- Move closer to your router");
-    tft.setCursor(10, 130); tft.print("- Check antenna is attached");
-    tft.setCursor(10, 144); tft.print("- 2.4 GHz networks only");
-    tft.setTextColor(ST77XX_YELLOW);
-    tft.setCursor(10, 168); tft.print("RIGHT = scan again");
-    tft.setCursor(10, 182); tft.print("MODE  = back");
-    while (true) {
-      if (btnPressed(BTN_RIGHT)) goto doScan;
-      if (btnPressed(BTN_MODE))  return;
-      delay(10);
-    }
+  tft.fillScreen(COL_BG); tft.setTextColor(COL_FG); tft.setTextSize(2);
+  tft.setCursor(22,26); tft.print("Scanning WiFi");
+  tft.setTextSize(1); tft.setTextColor(COL_ACCENT); tft.setCursor(20,58); tft.print("Please wait...");
+  WiFi.mode(WIFI_STA); WiFi.disconnect(); delay(1500);
+  n=WiFi.scanNetworks(false,true);
+  if (n<=0) {
+    tft.fillScreen(COL_BG); tft.setTextColor(ST77XX_RED); tft.setTextSize(1);
+    tft.setCursor(10,80); tft.print("No networks found.");
+    tft.setTextColor(COL_ACCENT); tft.setCursor(10,100); tft.print("Move closer to router");
+    tft.setTextColor(ST77XX_YELLOW); tft.setCursor(10,140); tft.print("RIGHT=scan again  MODE=back");
+    while (true) { if(btnPressed(BTN_RIGHT))goto doScan; if(btnPressed(BTN_MODE))return; delay(10); }
   }
-
-  int sel = 0;
-  const int MAX_SHOW = 8;
-
-  auto drawList = [&]() {
-    tft.fillScreen(COL_BG);
-    tft.setTextColor(COL_FG); tft.setTextSize(1);
-    tft.setCursor(4, 4);
-    tft.print("WiFi: U/D=scroll  R=connect  MODE=back");
-    tft.drawFastHLine(0, 14, 240, COL_DIM);
-
-    int startIdx = sel - 3;
-    if (startIdx < 0) startIdx = 0;
-    int maxStart = n - MAX_SHOW;
-    if (maxStart < 0) maxStart = 0;
-    if (startIdx > maxStart) startIdx = maxStart;
-
-    for (int i = 0; i < MAX_SHOW && (startIdx+i) < n; i++) {
-      int idx = startIdx + i;
-      bool isSel = (idx == sel);
-      int ry = 18 + i*26;
-
-      tft.fillRoundRect(4, ry, 232, 22, 3, isSel ? ST77XX_BLUE : COL_CARD);
-      tft.setTextColor(isSel ? ST77XX_WHITE : COL_FG);
-      tft.setCursor(8, ry+7);
-
-      String ssid = WiFi.SSID(idx);
-      if (ssid.length() > 24) ssid = ssid.substring(0,23) + "~";
+  int sel=0; const int MAX_SHOW=8;
+  auto drawList=[&](){
+    tft.fillScreen(COL_BG); tft.setTextColor(COL_FG); tft.setTextSize(1);
+    tft.setCursor(4,4); tft.print("WiFi: U/D=scroll  R=connect  MODE=back");
+    tft.drawFastHLine(0,14,240,COL_DIM);
+    int startIdx=sel-3; if(startIdx<0)startIdx=0;
+    int maxStart=n-MAX_SHOW; if(maxStart<0)maxStart=0;
+    if(startIdx>maxStart)startIdx=maxStart;
+    for (int i=0;i<MAX_SHOW&&(startIdx+i)<n;i++) {
+      int idx=startIdx+i; bool isSel=(idx==sel); int ry=18+i*26;
+      tft.fillRoundRect(4,ry,232,22,3,isSel?ST77XX_BLUE:COL_CARD);
+      tft.setTextColor(isSel?ST77XX_WHITE:COL_FG); tft.setCursor(8,ry+7);
+      String ssid=WiFi.SSID(idx); if(ssid.length()>24)ssid=ssid.substring(0,23)+"~";
       tft.print(ssid);
-
-      int rssi = WiFi.RSSI(idx);
-      const char* sig =
-        (rssi > -55) ? "Ex" :
-        (rssi > -70) ? "Ok" : "Lo";
-
-      tft.setCursor(190, ry+7);
-      tft.print(sig);
+      int rssi=WiFi.RSSI(idx);
+      tft.setCursor(190,ry+7); tft.print(rssi>-55?"Ex":rssi>-70?"Ok":"Lo");
     }
   };
-
   drawList();
-
   while (true) {
-    if (btnPressed(BTN_UP))   { sel = (sel + n - 1) % n; drawList(); }
-    if (btnPressed(BTN_DOWN)) { sel = (sel + 1) % n;     drawList(); }
-
-    if (btnPressed(BTN_RIGHT)) {
-      String ssid = WiFi.SSID(sel);
-      String password = enterPassword(ssid);
-
-      tft.fillScreen(COL_BG);
-      tft.setTextColor(COL_FG); tft.setTextSize(1);
-      tft.setCursor(10, 70); tft.print("Connecting to:");
-      tft.setCursor(10, 86); tft.print(ssid);
-
-      WiFi.begin(ssid.c_str(), password.c_str());
-      unsigned long t0 = millis();
-      while (WiFi.status() != WL_CONNECTED && millis() - t0 < 12000) {
-        delay(300);
-      }
-
-      if (WiFi.status() == WL_CONNECTED) {
-        strncpy(savedSSID, ssid.c_str(), sizeof(savedSSID));
-        strncpy(savedPass, password.c_str(), sizeof(savedPass));
-        ee_writeStr(EE_SSID_ADDR, savedSSID, 34);
-        ee_writeStr(EE_PASS_ADDR, savedPass, 66);
-        ee_writeMagic();
-        tft.fillScreen(COL_BG);
-        tft.setTextColor(ST77XX_GREEN); tft.setTextSize(1);
-        tft.setCursor(10, 80); tft.print("Connected!");
-        tft.setCursor(10, 96); tft.print(WiFi.localIP().toString());
-        delay(2000);
-        return;
+    if(btnPressed(BTN_UP))  {sel=(sel+n-1)%n;drawList();}
+    if(btnPressed(BTN_DOWN)){sel=(sel+1)%n;  drawList();}
+    if(btnPressed(BTN_RIGHT)){
+      String ssid=WiFi.SSID(sel); String password=enterPassword(ssid);
+      tft.fillScreen(COL_BG); tft.setTextColor(COL_FG); tft.setTextSize(1);
+      tft.setCursor(10,70); tft.print("Connecting to:"); tft.setCursor(10,86); tft.print(ssid);
+      WiFi.begin(ssid.c_str(),password.c_str());
+      unsigned long t0=millis();
+      while(WiFi.status()!=WL_CONNECTED&&millis()-t0<12000)delay(300);
+      if(WiFi.status()==WL_CONNECTED){
+        strncpy(savedSSID,ssid.c_str(),sizeof(savedSSID));
+        strncpy(savedPass,password.c_str(),sizeof(savedPass));
+        ee_writeStr(EE_SSID_ADDR,savedSSID,34); ee_writeStr(EE_PASS_ADDR,savedPass,66); ee_writeMagic();
+        tft.fillScreen(COL_BG); tft.setTextColor(ST77XX_GREEN); tft.setTextSize(1);
+        tft.setCursor(10,80); tft.print("Connected!"); tft.setCursor(10,96); tft.print(WiFi.localIP().toString());
+        buzzOK(); delay(2000); return;
       } else {
-        tft.fillScreen(COL_BG);
-        tft.setTextColor(ST77XX_RED); tft.setTextSize(1);
-        tft.setCursor(10, 80); tft.print("Connection failed.");
-        tft.setTextColor(COL_ACCENT); tft.setCursor(10, 100);
-        tft.print("Wrong password? Try again.");
-        delay(2500);
-        drawList();
+        tft.fillScreen(COL_BG); tft.setTextColor(ST77XX_RED); tft.setTextSize(1);
+        tft.setCursor(10,80); tft.print("Connection failed."); buzzFail(); delay(2500); drawList();
       }
     }
-
-    if (btnPressed(BTN_MODE)) return;
-    delay(10);
+    if(btnPressed(BTN_MODE))return; delay(10);
   }
 }
 
 // ======================================================
-//  SETTINGS  (5 tabs: Storage | WiFi | BLE | Theme | SMS)
+//  SETTINGS
 // ======================================================
-const char* settingsTabs[] = { "Storage", "WiFi", "BLE", "Theme", "SMS" };
-const int   NUM_TABS = 5;
-int settingsTab = 0;
+const char* settingsTabs[]={"Storage","WiFi","BLE","Theme","SMS"};
+const int NUM_TABS=5;
+int settingsTab=0;
 
-void drawTabBar() {
-  // 5 tabs: each 46 px wide with 1 px gap, total = 5*46+4 = 234
-  for (int i = 0; i < NUM_TABS; i++) {
-    int tx = 3 + i*47;
-    bool sel = (i == settingsTab);
-    tft.fillRoundRect(tx, 3, 44, 20, 3, sel ? ST77XX_BLUE : COL_CARD);
-    tft.drawRoundRect(tx, 3, 44, 20, 3, sel ? ST77XX_WHITE : COL_DIM);
-    tft.setTextColor(sel ? ST77XX_WHITE : COL_ACCENT); tft.setTextSize(1);
-    tft.setCursor(tx + (44-(int)strlen(settingsTabs[i])*6)/2, 10);
-    tft.print(settingsTabs[i]);
+void drawTabBar(){
+  for(int i=0;i<NUM_TABS;i++){
+    int tx=3+i*47; bool sel=(i==settingsTab);
+    tft.fillRoundRect(tx,3,44,20,3,sel?ST77XX_BLUE:COL_CARD);
+    tft.drawRoundRect(tx,3,44,20,3,sel?ST77XX_WHITE:COL_DIM);
+    tft.setTextColor(sel?ST77XX_WHITE:COL_ACCENT); tft.setTextSize(1);
+    tft.setCursor(tx+(44-(int)strlen(settingsTabs[i])*6)/2,10); tft.print(settingsTabs[i]);
   }
-  tft.drawFastHLine(0, 26, 240, COL_DIM);
+  tft.drawFastHLine(0,26,240,COL_DIM);
 }
-
-void drawStorageTab(bool erased) {
+void drawStorageTab(bool erased){
   tft.fillScreen(COL_BG); drawTabBar();
   tft.setTextColor(ST77XX_YELLOW); tft.setTextSize(1);
-  tft.setCursor(10, 34); tft.print("EEPROM (flash-emulated on ESP32-S3)");
-  tft.fillRoundRect(6, 46, 228, 92, 5, COL_CARD);
-  tft.drawRoundRect(6, 46, 228, 92, 5, COL_DIM);
-  int used = ee_countUsed();
+  tft.setCursor(10,34); tft.print("EEPROM (flash-emulated on ESP32-S3)");
+  tft.fillRoundRect(6,46,228,92,5,COL_CARD); tft.drawRoundRect(6,46,228,92,5,COL_DIM);
+  int used=ee_countUsed();
   tft.setTextColor(COL_FG); tft.setTextSize(1);
-  tft.setCursor(12, 54); tft.print("Total  : "); tft.print(EE_TOTAL); tft.print(" bytes");
-  tft.setCursor(12, 70); tft.print("Written: "); tft.print(used); tft.print(" bytes");
-  tft.setTextColor(ST77XX_GREEN);
-  tft.setCursor(12, 86); tft.print("Free   : "); tft.print(EE_TOTAL-used); tft.print(" bytes");
-  tft.setTextColor(COL_ACCENT);
-  tft.setCursor(12, 102); tft.print("Flash: 16 MB   RAM: 512 KB");
-  tft.setCursor(12, 118); tft.print("Chip: ESP32-S3 (Arduino Nano ESP32)");
-
-  if (erased) {
-    tft.fillRoundRect(40, 150, 160, 28, 5, 0x2104);
-    tft.setTextColor(ST77XX_GREEN); tft.setTextSize(1);
-    tft.setCursor(62, 160); tft.print("Memory erased!");
-  } else {
-    tft.fillRoundRect(40, 150, 160, 28, 5, ST77XX_RED);
-    tft.setTextColor(ST77XX_WHITE); tft.setTextSize(1);
-    tft.setCursor(50, 160); tft.print("Erase All Memory");
-    tft.setTextColor(COL_ACCENT);
-    tft.setCursor(14, 186); tft.print("Hold DOWN 2 s to erase everything");
-  }
-  tft.setTextColor(COL_DIM); tft.setTextSize(1);
-  tft.setCursor(14, 212); tft.print("L/R = tabs    MODE = back to menu");
+  tft.setCursor(12,54); tft.print("Total  : "); tft.print(EE_TOTAL); tft.print(" bytes");
+  tft.setCursor(12,70); tft.print("Written: "); tft.print(used); tft.print(" bytes");
+  tft.setTextColor(ST77XX_GREEN); tft.setCursor(12,86); tft.print("Free   : "); tft.print(EE_TOTAL-used); tft.print(" bytes");
+  tft.setTextColor(COL_ACCENT); tft.setCursor(12,102); tft.print("Chip: ESP32-S3 (Arduino Nano ESP32)");
+  tft.setCursor(12,118); tft.print("Flash: 16 MB   RAM: 512 KB");
+  if (erased) { tft.fillRoundRect(40,150,160,28,5,0x2104); tft.setTextColor(ST77XX_GREEN); tft.setCursor(62,160); tft.print("Memory erased!"); }
+  else { tft.fillRoundRect(40,150,160,28,5,ST77XX_RED); tft.setTextColor(ST77XX_WHITE); tft.setCursor(50,160); tft.print("Erase All Memory"); tft.setTextColor(COL_ACCENT); tft.setCursor(14,186); tft.print("Hold DOWN 2s to erase everything"); }
+  tft.setTextColor(COL_DIM); tft.setCursor(14,212); tft.print("L/R=tabs    MODE=back to menu");
 }
-
-void drawWifiTab() {
+void drawWifiTab(){
   tft.fillScreen(COL_BG); drawTabBar();
-  bool conn = (WiFi.status() == WL_CONNECTED);
-  tft.setTextColor(conn ? ST77XX_GREEN : ST77XX_RED); tft.setTextSize(1);
-  tft.setCursor(10, 34); tft.print(conn ? "Status: Connected" : "Status: Disconnected");
-  tft.fillRoundRect(6, 46, 228, 80, 5, COL_CARD);
-  tft.drawRoundRect(6, 46, 228, 80, 5, COL_DIM);
+  bool conn=(WiFi.status()==WL_CONNECTED);
+  tft.setTextColor(conn?ST77XX_GREEN:ST77XX_RED); tft.setTextSize(1);
+  tft.setCursor(10,34); tft.print(conn?"Status: Connected":"Status: Disconnected");
+  tft.fillRoundRect(6,46,228,80,5,COL_CARD); tft.drawRoundRect(6,46,228,80,5,COL_DIM);
   tft.setTextColor(COL_FG); tft.setTextSize(1);
   if (conn) {
-    tft.setCursor(12, 54); tft.print("SSID : "); tft.print(WiFi.SSID());
-    tft.setCursor(12, 70); tft.print("IP   : "); tft.print(WiFi.localIP().toString());
-    tft.setCursor(12, 86); tft.print("RSSI : "); tft.print(WiFi.RSSI()); tft.print(" dBm");
-    tft.setCursor(12, 102); tft.print("MAC  : "); tft.print(WiFi.macAddress());
+    tft.setCursor(12,54); tft.print("SSID : "); tft.print(WiFi.SSID());
+    tft.setCursor(12,70); tft.print("IP   : "); tft.print(WiFi.localIP().toString());
+    tft.setCursor(12,86); tft.print("RSSI : "); tft.print(WiFi.RSSI()); tft.print(" dBm");
+    tft.setCursor(12,102); tft.print("MAC  : "); tft.print(WiFi.macAddress());
   } else {
-    tft.setCursor(12, 54);
-    if (savedSSID[0]) { tft.print("Saved: "); tft.print(savedSSID); }
-    else               { tft.print("No saved network"); }
-    tft.setTextColor(COL_ACCENT);
-    tft.setCursor(12, 70); tft.print("MAC  : "); tft.print(WiFi.macAddress());
+    tft.setCursor(12,54); if(savedSSID[0]){tft.print("Saved: ");tft.print(savedSSID);}else tft.print("No saved network");
   }
-  tft.fillRoundRect(28, 140, 184, 28, 5, ST77XX_BLUE);
-  tft.setTextColor(ST77XX_WHITE); tft.setTextSize(1);
-  tft.setCursor(42, 150); tft.print("DOWN = Scan & Connect WiFi");
-  if (conn) {
-    tft.fillRoundRect(28, 176, 184, 24, 5, 0x8000);
-    tft.setTextColor(ST77XX_WHITE);
-    tft.setCursor(60, 184); tft.print("UP = Disconnect");
-  }
-  tft.setTextColor(COL_DIM); tft.setTextSize(1);
-  tft.setCursor(14, 212); tft.print("L/R = tabs    MODE = back to menu");
+  tft.fillRoundRect(28,140,184,28,5,ST77XX_BLUE); tft.setTextColor(ST77XX_WHITE); tft.setTextSize(1);
+  tft.setCursor(42,150); tft.print("DOWN=Scan & Connect WiFi");
+  if(conn){tft.fillRoundRect(28,176,184,24,5,0x8000);tft.setTextColor(ST77XX_WHITE);tft.setCursor(60,184);tft.print("UP=Disconnect");}
+  tft.setTextColor(COL_DIM); tft.setCursor(14,212); tft.print("L/R=tabs    MODE=back to menu");
 }
-
-void drawBLETab() {
+void drawBLETab(){
   tft.fillScreen(COL_BG); drawTabBar();
-  tft.setTextColor(COL_FG); tft.setTextSize(1);
-  tft.setCursor(10, 34); tft.print("Bluetooth Low Energy (BLE)");
-  tft.fillRoundRect(6, 46, 228, 72, 5, COL_CARD);
-  tft.drawRoundRect(6, 46, 228, 72, 5, COL_DIM);
-  tft.setTextColor(bleAdvertising ? ST77XX_CYAN : COL_DIM); tft.setTextSize(2);
-  tft.setCursor(12, 54); tft.print(bleAdvertising ? "ADVERTISING" : "IDLE");
-  tft.setTextColor(COL_ACCENT); tft.setTextSize(1);
-  tft.setCursor(12, 78);
-  if (bleInitDone) { tft.print("MAC: "); tft.print(bleAddress()); }
-  else             { tft.print("BLE not yet initialized"); }
-  tft.setCursor(12, 94); tft.print("Note: ESP32-S3 = BLE only (no Classic BT)");
-  tft.fillRoundRect(28, 132, 184, 28, 5, bleAdvertising ? 0x8000 : 0x0410);
-  tft.setTextColor(ST77XX_WHITE); tft.setTextSize(1);
-  tft.setCursor(38, 142);
-  tft.print(bleAdvertising ? "DOWN = Stop Advertising" : "DOWN = Start BLE Advertising");
-  tft.setTextColor(COL_DIM); tft.setTextSize(1);
-  tft.setCursor(14, 212); tft.print("L/R = tabs    MODE = back to menu");
+  tft.setTextColor(COL_FG); tft.setTextSize(1); tft.setCursor(10,34); tft.print("Bluetooth Low Energy (BLE)");
+  tft.fillRoundRect(6,46,228,72,5,COL_CARD); tft.drawRoundRect(6,46,228,72,5,COL_DIM);
+  tft.setTextColor(bleAdvertising?ST77XX_CYAN:COL_DIM); tft.setTextSize(2);
+  tft.setCursor(12,54); tft.print(bleAdvertising?"ADVERTISING":"IDLE");
+  tft.setTextColor(COL_ACCENT); tft.setTextSize(1); tft.setCursor(12,78);
+  if(bleInitDone){tft.print("MAC: ");tft.print(bleAddress());}else tft.print("BLE not yet initialized");
+  tft.setCursor(12,94); tft.print("Note: ESP32-S3 = BLE only (no Classic BT)");
+  tft.fillRoundRect(28,132,184,28,5,bleAdvertising?0x8000:0x0410);
+  tft.setTextColor(ST77XX_WHITE); tft.setTextSize(1); tft.setCursor(38,142);
+  tft.print(bleAdvertising?"DOWN=Stop Advertising":"DOWN=Start BLE Advertising");
+  tft.setTextColor(COL_DIM); tft.setCursor(14,212); tft.print("L/R=tabs    MODE=back to menu");
 }
-
-void drawThemeTab() {
+void drawThemeTab(){
   tft.fillScreen(COL_BG); drawTabBar();
-  tft.setTextColor(COL_FG); tft.setTextSize(1);
-  tft.setCursor(10, 34); tft.print("Current theme:");
-  tft.setTextSize(2); tft.setTextColor(darkTheme ? 0x8C51 : 0x4208);
-  tft.setCursor(10, 50); tft.print(darkTheme ? "DARK" : "LIGHT");
-
-  // Dark preview box
-  tft.fillRoundRect(8, 88, 108, 64, 6, ST77XX_BLACK);
-  tft.drawRoundRect(8, 88, 108, 64, 6, darkTheme ? ST77XX_WHITE : COL_DIM);
-  tft.setTextColor(ST77XX_WHITE); tft.setTextSize(1);
-  tft.setCursor(38, 112); tft.print("DARK");
-  if (darkTheme) { tft.setTextColor(ST77XX_CYAN); tft.setCursor(14, 128); tft.print("<< active"); }
-
-  // Light preview box
-  tft.fillRoundRect(124, 88, 108, 64, 6, ST77XX_WHITE);
-  tft.drawRoundRect(124, 88, 108, 64, 6, !darkTheme ? 0x0841 : COL_DIM);
-  tft.setTextColor(0x0841); tft.setTextSize(1);
-  tft.setCursor(152, 112); tft.print("LIGHT");
-  if (!darkTheme) { tft.setTextColor(0x0410); tft.setCursor(128, 128); tft.print("<< active"); }
-
-  tft.fillRoundRect(28, 166, 184, 28, 5, 0x6B4D);
-  tft.setTextColor(ST77XX_WHITE); tft.setTextSize(1);
-  tft.setCursor(44, 176); tft.print("DOWN = Toggle Dark / Light");
-
-  tft.setTextColor(COL_DIM); tft.setTextSize(1);
-  tft.setCursor(14, 212); tft.print("L/R = tabs    MODE = back to menu");
+  tft.setTextColor(COL_FG); tft.setTextSize(1); tft.setCursor(10,34); tft.print("Current theme:");
+  tft.setTextSize(2); tft.setTextColor(darkTheme?0x8C51:0x4208);
+  tft.setCursor(10,50); tft.print(darkTheme?"DARK":"LIGHT");
+  tft.fillRoundRect(8,88,108,64,6,ST77XX_BLACK); tft.drawRoundRect(8,88,108,64,6,darkTheme?ST77XX_WHITE:COL_DIM);
+  tft.setTextColor(ST77XX_WHITE); tft.setTextSize(1); tft.setCursor(38,112); tft.print("DARK");
+  if(darkTheme){tft.setTextColor(ST77XX_CYAN);tft.setCursor(14,128);tft.print("<< active");}
+  tft.fillRoundRect(124,88,108,64,6,ST77XX_WHITE); tft.drawRoundRect(124,88,108,64,6,!darkTheme?0x0841:COL_DIM);
+  tft.setTextColor(0x0841); tft.setTextSize(1); tft.setCursor(152,112); tft.print("LIGHT");
+  if(!darkTheme){tft.setTextColor(0x0410);tft.setCursor(128,128);tft.print("<< active");}
+  tft.fillRoundRect(28,166,184,28,5,0x6B4D); tft.setTextColor(ST77XX_WHITE); tft.setTextSize(1);
+  tft.setCursor(44,176); tft.print("DOWN=Toggle Dark / Light");
+  tft.setTextColor(COL_DIM); tft.setCursor(14,212); tft.print("L/R=tabs    MODE=back to menu");
 }
-
-void drawSmsTab() {
+void drawSmsTab(){
   tft.fillScreen(COL_BG); drawTabBar();
-  tft.setTextColor(ST77XX_MAGENTA); tft.setTextSize(1);
-  tft.setCursor(10, 32); tft.print("Twilio SMS Credentials");
-
-  // SID row
-  tft.fillRoundRect(4, 44, 232, 18, 3, COL_CARD);
-  tft.setTextColor(COL_ACCENT); tft.setCursor(8, 50);
-  tft.print("SID: ");
-  tft.setTextColor(twSID[0] ? ST77XX_CYAN : COL_DIM);
-  if (twSID[0]) {
-    // Show first 10 chars + "..."
-    char preview[14]; strncpy(preview, twSID, 13); preview[13]=0;
-    tft.print(preview); if (strlen(twSID)>13) tft.print("...");
-  } else { tft.print("(not set)"); }
-
-  // Token row
-  tft.fillRoundRect(4, 66, 232, 18, 3, COL_CARD);
-  tft.setTextColor(COL_ACCENT); tft.setCursor(8, 72);
-  tft.print("Tok: ");
-  tft.setTextColor(twToken[0] ? ST77XX_CYAN : COL_DIM);
-  if (twToken[0]) { tft.print("**"); tft.print(String(twToken).substring(0,6)); tft.print("..."); }
-  else { tft.print("(not set)"); }
-
-  // From number
-  tft.fillRoundRect(4, 88, 232, 18, 3, COL_CARD);
-  tft.setTextColor(COL_ACCENT); tft.setCursor(8, 94);
-  tft.print("From:");
-  tft.setTextColor(twFrom[0] ? ST77XX_GREEN : COL_DIM);
-  tft.print(twFrom[0] ? twFrom : " (not set)");
-
-  bool hasAll = (twSID[0] && twToken[0] && twFrom[0]);
-  tft.fillRoundRect(4, 110, 232, 16, 3, hasAll ? 0x0410 : 0x8000);
+  tft.setTextColor(ST77XX_MAGENTA); tft.setTextSize(1); tft.setCursor(10,32); tft.print("Twilio SMS Credentials");
+  tft.fillRoundRect(4,44,232,18,3,COL_CARD); tft.setTextColor(COL_ACCENT); tft.setCursor(8,50); tft.print("SID: ");
+  tft.setTextColor(twSID[0]?ST77XX_CYAN:COL_DIM);
+  if(twSID[0]){char p[14];strncpy(p,twSID,13);p[13]=0;tft.print(p);if(strlen(twSID)>13)tft.print("...");}else tft.print("(not set)");
+  tft.fillRoundRect(4,66,232,18,3,COL_CARD); tft.setTextColor(COL_ACCENT); tft.setCursor(8,72); tft.print("Tok: ");
+  tft.setTextColor(twToken[0]?ST77XX_CYAN:COL_DIM);
+  if(twToken[0]){tft.print("**");tft.print(String(twToken).substring(0,6));tft.print("...");}else tft.print("(not set)");
+  tft.fillRoundRect(4,88,232,18,3,COL_CARD); tft.setTextColor(COL_ACCENT); tft.setCursor(8,94); tft.print("From:");
+  tft.setTextColor(twFrom[0]?ST77XX_GREEN:COL_DIM); tft.print(twFrom[0]?twFrom:" (not set)");
+  bool hasAll=(twSID[0]&&twToken[0]&&twFrom[0]);
+  tft.fillRoundRect(4,110,232,16,3,hasAll?0x0410:0x8000); tft.setTextColor(ST77XX_WHITE); tft.setTextSize(1);
+  tft.setCursor(8,115); tft.print(hasAll?"OK: credentials configured":"Missing credentials");
+  tft.fillRoundRect(4,132,110,20,3,ST77XX_BLUE); tft.fillRoundRect(120,132,116,20,3,0x6B4D);
   tft.setTextColor(ST77XX_WHITE); tft.setTextSize(1);
-  tft.setCursor(8, 115);
-  tft.print(hasAll ? "OK: credentials configured" : "Missing credentials — see below");
-
-  // Buttons
-  tft.fillRoundRect(4,  132, 110, 20, 3, ST77XX_BLUE);
-  tft.fillRoundRect(120, 132, 116, 20, 3, 0x6B4D);
-  tft.setTextColor(ST77XX_WHITE); tft.setTextSize(1);
-  tft.setCursor(12, 139); tft.print("UP = Edit SID");
-  tft.setCursor(126,139); tft.print("DOWN = Edit Token");
-
-  tft.fillRoundRect(4,  158, 110, 20, 3, 0x0410);
-  tft.fillRoundRect(120, 158, 116, 20, 3, 0x7BEF);
-  tft.setTextColor(ST77XX_WHITE);
-  tft.setCursor(12, 165); tft.print("L = Edit From");
-  tft.setTextColor(ST77XX_BLACK);
-  tft.setCursor(126,165); tft.print("R = Clear All");
-
+  tft.setCursor(12,139); tft.print("UP=Edit SID"); tft.setCursor(126,139); tft.print("DOWN=Edit Token");
+  tft.fillRoundRect(4,158,110,20,3,0x0410); tft.fillRoundRect(120,158,116,20,3,0x7BEF);
+  tft.setTextColor(ST77XX_WHITE); tft.setCursor(12,165); tft.print("L=Edit From");
+  tft.setTextColor(ST77XX_BLACK); tft.setCursor(126,165); tft.print("R=Clear All");
   tft.setTextColor(COL_DIM); tft.setTextSize(1);
-  tft.setCursor(4, 186); tft.print("Get free Twilio trial at twilio.com");
-  tft.setCursor(4, 198); tft.print("Trial: send to verified numbers only");
-  tft.setCursor(4, 212); tft.print("Tabs = L/R     MODE = back to menu");
+  tft.setCursor(4,186); tft.print("Get free Twilio trial at twilio.com");
+  tft.setCursor(4,212); tft.print("Tabs=L/R     MODE=back to menu");
 }
-
-void redrawCurrentTab(bool storageErased) {
-  switch (settingsTab) {
-    case 0: drawStorageTab(storageErased); break;
-    case 1: drawWifiTab();                 break;
-    case 2: drawBLETab();                  break;
-    case 3: drawThemeTab();                break;
-    case 4: drawSmsTab();                  break;
+void redrawCurrentTab(bool storageErased){
+  switch(settingsTab){
+    case 0:drawStorageTab(storageErased);break; case 1:drawWifiTab();break;
+    case 2:drawBLETab();break; case 3:drawThemeTab();break; case 4:drawSmsTab();break;
   }
 }
-
-void runSettings() {
-  settingsTab = 0;
-  bool storageErased = false;
-  drawStorageTab(false);
-
-  while (true) {
-    if (btnPressed(BTN_LEFT))  { settingsTab=(settingsTab+NUM_TABS-1)%NUM_TABS; storageErased=false; redrawCurrentTab(false); }
-    if (btnPressed(BTN_RIGHT)) { settingsTab=(settingsTab+1)%NUM_TABS;           storageErased=false; redrawCurrentTab(false); }
-
-    if (settingsTab == 0 && btnPressed(BTN_DOWN) && !storageErased) {
-      tft.fillRoundRect(8, 192, 224, 20, 3, 0x8000);
-      tft.setTextColor(ST77XX_WHITE); tft.setTextSize(1);
-      tft.setCursor(14, 199); tft.print("Hold DOWN 2 s to confirm erase...");
-      unsigned long t0 = millis(); bool confirmed = false;
-      while (digitalRead(BTN_DOWN) == LOW) {
-        if (millis()-t0 >= 2000) { confirmed = true; break; }
-        delay(10);
-      }
-      if (confirmed) { ee_eraseAll(); storageErased = true; }
-      drawStorageTab(storageErased);
+void runSettings(){
+  settingsTab=0; bool storageErased=false; drawStorageTab(false);
+  while(true){
+    if(btnPressed(BTN_LEFT)) {settingsTab=(settingsTab+NUM_TABS-1)%NUM_TABS;storageErased=false;redrawCurrentTab(false);}
+    if(settingsTab!=4&&btnPressed(BTN_RIGHT)){settingsTab=(settingsTab+1)%NUM_TABS;storageErased=false;redrawCurrentTab(false);}
+    if(settingsTab==0&&btnPressed(BTN_DOWN)&&!storageErased){
+      tft.fillRoundRect(8,192,224,20,3,0x8000); tft.setTextColor(ST77XX_WHITE); tft.setTextSize(1);
+      tft.setCursor(14,199); tft.print("Hold DOWN 2s to confirm erase...");
+      unsigned long t0=millis(); bool confirmed=false;
+      while(digitalRead(BTN_DOWN)==LOW){if(millis()-t0>=2000){confirmed=true;break;}delay(10);}
+      if(confirmed){ee_eraseAll();storageErased=true;} drawStorageTab(storageErased);
     }
-
-    if (settingsTab == 1) {
-      if (btnPressed(BTN_DOWN)) { runWifiSettings(); drawWifiTab(); }
-      if (btnPressed(BTN_UP) && WiFi.status()==WL_CONNECTED) { WiFi.disconnect(true); delay(400); drawWifiTab(); }
+    if(settingsTab==1){
+      if(btnPressed(BTN_DOWN)){runWifiSettings();drawWifiTab();}
+      if(btnPressed(BTN_UP)&&WiFi.status()==WL_CONNECTED){WiFi.disconnect(true);delay(400);drawWifiTab();}
     }
-
-    if (settingsTab == 2 && btnPressed(BTN_DOWN)) {
-      if (bleAdvertising) bleStop(); else bleStart();
-      EEPROM.write(EE_BLE_ADDR, bleAdvertising ? 1 : 0);
-      EEPROM.commit();
-      drawBLETab();
+    if(settingsTab==2&&btnPressed(BTN_DOWN)){
+      if(bleAdvertising)bleStop();else bleStart();
+      EEPROM.write(EE_BLE_ADDR,bleAdvertising?1:0);EEPROM.commit();drawBLETab();
     }
-
-    if (settingsTab == 3 && btnPressed(BTN_DOWN)) {
-      darkTheme = !darkTheme;
-      EEPROM.write(EE_THEME_ADDR, darkTheme ? 0 : 1);
-      EEPROM.commit();
-      applyTheme();
-      drawThemeTab();
+    if(settingsTab==3&&btnPressed(BTN_DOWN)){
+      darkTheme=!darkTheme;EEPROM.write(EE_THEME_ADDR,darkTheme?0:1);EEPROM.commit();applyTheme();drawThemeTab();
     }
-
-    if (settingsTab == 4) {
-      // UP = edit SID
-      if (btnPressed(BTN_UP)) {
-        String s = textEntry("Twilio Account SID (AC...):", twSID);
-        s.toCharArray(twSID, 36);
-        ee_writeMagic(); ee_writeStr(EE_TW_SID_ADDR, twSID, 36);
-        drawSmsTab();
-      }
-      // DOWN = edit Auth Token
-      if (btnPressed(BTN_DOWN)) {
-        String s = textEntry("Twilio Auth Token:", twToken);
-        s.toCharArray(twToken, 34);
-        ee_writeMagic(); ee_writeStr(EE_TW_TOK_ADDR, twToken, 34);
-        drawSmsTab();
-      }
-      // LEFT = edit From number
-      if (btnPressed(BTN_LEFT) && settingsTab == 4) {
-        String s = textEntry("Twilio 'From' number (+1xxx):", twFrom);
-        s.toCharArray(twFrom, 18);
-        ee_writeMagic(); ee_writeStr(EE_TW_FROM_ADDR, twFrom, 18);
-        drawSmsTab();
-        return; // prevent tab switch from eating this press
-      }
-      // RIGHT = clear all SMS credentials
-      if (btnPressed(BTN_RIGHT)) {
-        memset(twSID,   0, sizeof(twSID));
-        memset(twToken, 0, sizeof(twToken));
-        memset(twFrom,  0, sizeof(twFrom));
-        memset(twLastTo,0, sizeof(twLastTo));
-        ee_writeStr(EE_TW_SID_ADDR,  twSID,    36);
-        ee_writeStr(EE_TW_TOK_ADDR,  twToken,  34);
-        ee_writeStr(EE_TW_FROM_ADDR, twFrom,   18);
-        ee_writeStr(EE_TW_TO_ADDR,   twLastTo, 18);
-        drawSmsTab();
-        return;
-      }
+    if(settingsTab==4){
+      if(btnPressed(BTN_UP)){String s=textEntry("Twilio SID (AC...):",twSID);s.toCharArray(twSID,36);ee_writeMagic();ee_writeStr(EE_TW_SID_ADDR,twSID,36);drawSmsTab();}
+      if(btnPressed(BTN_DOWN)){String s=textEntry("Twilio Auth Token:",twToken);s.toCharArray(twToken,34);ee_writeMagic();ee_writeStr(EE_TW_TOK_ADDR,twToken,34);drawSmsTab();}
+      if(btnPressed(BTN_LEFT)&&settingsTab==4){String s=textEntry("Twilio 'From' (+1xxx):",twFrom);s.toCharArray(twFrom,18);ee_writeMagic();ee_writeStr(EE_TW_FROM_ADDR,twFrom,18);drawSmsTab();return;}
+      if(btnPressed(BTN_RIGHT)){memset(twSID,0,sizeof(twSID));memset(twToken,0,sizeof(twToken));memset(twFrom,0,sizeof(twFrom));memset(twLastTo,0,sizeof(twLastTo));ee_writeStr(EE_TW_SID_ADDR,twSID,36);ee_writeStr(EE_TW_TOK_ADDR,twToken,34);ee_writeStr(EE_TW_FROM_ADDR,twFrom,18);ee_writeStr(EE_TW_TO_ADDR,twLastTo,18);drawSmsTab();return;}
     }
-
-    if (btnPressed(BTN_MODE)) { currentState = STATE_MENU; return; }
+    if(btnPressed(BTN_MODE)){currentState=STATE_MENU;return;}
     delay(10);
   }
 }
 
 // ======================================================
-//  WEATHER  (wttr.in — free, no API key)
-//  Auto-detects city from your IP using ip-api.com
+//  WEATHER  (wttr.in — no API key needed)
 // ======================================================
-
-// Returns city name from IP geolocation ("Chicago", "London", etc.)
-// Returns "" on failure.
 String fetchCityFromIP() {
-  if (WiFi.status() != WL_CONNECTED) return "";
-  HTTPClient http;
-  http.setTimeout(6000);
+  if(WiFi.status()!=WL_CONNECTED)return "";
+  HTTPClient http; http.setTimeout(6000);
   http.begin("http://ip-api.com/json/?fields=city");
-  http.addHeader("User-Agent", "curl/7.0");
-  int code = http.GET();
-  String city = "";
-  if (code == 200) {
-    String body = http.getString();
-    // Parse: {"city":"Chicago"}
-    int ci = body.indexOf("\"city\":\"");
-    if (ci >= 0) {
-      ci += 8;
-      int ce = body.indexOf("\"", ci);
-      if (ce > ci) city = body.substring(ci, ce);
-    }
+  http.addHeader("User-Agent","curl/7.0");
+  int code=http.GET(); String city="";
+  if(code==200){
+    String body=http.getString();
+    int ci=body.indexOf("\"city\":\""); if(ci>=0){ci+=8;int ce=body.indexOf("\"",ci);if(ce>ci)city=body.substring(ci,ce);}
   }
-  http.end();
-  return city;
+  http.end(); return city;
 }
 
 WeatherData fetchWeather(const String& city) {
-  WeatherData w; w.valid = false;
-  if (WiFi.status() != WL_CONNECTED) return w;
-  HTTPClient http;
-  String c = city; c.replace(" ", "+");
-  String url = "http://wttr.in/" + c + "?format=%t|%f|%h|%u|%w|%C|%p|%P";
-  http.setTimeout(8000);
-  http.begin(url);
-  http.addHeader("User-Agent", "curl/7.0");
-  int code = http.GET();
-  if (code == 200) {
-    String body = http.getString(); body.trim();
-    String parts[8];
-    int p = 0, seg = 0;
-    for (int i = 0; i <= (int)body.length() && seg < 8; i++) {
-      if (i == (int)body.length() || body[i] == '|') {
-        parts[seg++] = body.substring(p, i); p = i + 1;
-      }
-    }
-    w.temp=parts[0]; w.feelsLike=parts[1]; w.humidity=parts[2];
-    w.uvIndex=parts[3]; w.windSpeed=parts[4];
-    w.condition=parts[5]; w.condition.trim();
-    if (w.condition.length() > 22) w.condition = w.condition.substring(0,22);
-    w.precip=parts[6]; w.precip.trim();
-    w.pressure=parts[7]; w.pressure.trim();
-    w.valid = (w.temp.length() > 0);
+  WeatherData w; w.valid=false; if(WiFi.status()!=WL_CONNECTED)return w;
+  HTTPClient http; String c=city; c.replace(" ","+");
+  String url="http://wttr.in/"+c+"?format=%t|%f|%h|%u|%w|%C|%p|%P";
+  http.setTimeout(8000); http.begin(url); http.addHeader("User-Agent","curl/7.0");
+  int code=http.GET();
+  if(code==200){
+    String body=http.getString(); body.trim();
+    String parts[8]; int p=0,seg=0;
+    for(int i=0;i<=(int)body.length()&&seg<8;i++){if(i==(int)body.length()||body[i]=='|'){parts[seg++]=body.substring(p,i);p=i+1;}}
+    w.temp=parts[0];w.feelsLike=parts[1];w.humidity=parts[2];w.uvIndex=parts[3];w.windSpeed=parts[4];
+    w.condition=parts[5];w.condition.trim();if(w.condition.length()>22)w.condition=w.condition.substring(0,22);
+    w.precip=parts[6];w.precip.trim();w.pressure=parts[7];w.pressure.trim();
+    w.valid=(w.temp.length()>0);
+  }
+  http.end(); return w;
+}
+
+// AQI via Open-Meteo (free, no key) —————————————————
+AQIData fetchAQI() {
+  AQIData a; a.valid=false;
+  if(WiFi.status()!=WL_CONNECTED)return a;
+  // Step 1: get lat/lon from IP
+  HTTPClient http; http.setTimeout(6000);
+  http.begin("http://ip-api.com/json/?fields=lat,lon");
+  http.addHeader("User-Agent","curl/7.0");
+  int code=http.GET(); float lat=51.5f,lon=-0.1f;
+  if(code==200){
+    String body=http.getString();
+    int li=body.indexOf("\"lat\":"); if(li>=0){li+=6;int le=body.indexOf(",",li);if(le>li)lat=body.substring(li,le).toFloat();}
+    int loi=body.indexOf("\"lon\":"); if(loi>=0){loi+=6;int loe=body.indexOf(",",loi);if(loe>loi)lon=body.substring(loi,loe).toFloat();}
   }
   http.end();
-  return w;
+  // Step 2: fetch AQI
+  char url[180];
+  snprintf(url,sizeof(url),"http://air-quality-api.open-meteo.com/v1/air-quality?latitude=%.4f&longitude=%.4f&current=us_aqi,pm10,pm2_5",lat,lon);
+  http.setTimeout(8000); http.begin(url);
+  code=http.GET();
+  if(code==200){
+    String body=http.getString();
+    int ai=body.indexOf("\"us_aqi\":"); if(ai>=0){ai+=9;int ae=body.indexOf(",",ai);if(ae>ai)a.aqi=body.substring(ai,ae).toInt();}
+    int pi=body.indexOf("\"pm10\":"); if(pi>=0){pi+=7;int pe=body.indexOf(",",pi);if(pe>pi)a.pm10_i=body.substring(pi,pe).toFloat();}
+    int p2i=body.indexOf("\"pm2_5\":"); if(p2i>=0){p2i+=8;int p2e=body.indexOf(",",p2i);if(p2e>p2i)a.pm25_i=body.substring(p2i,p2e).toFloat();}
+    a.lat=lat; a.lon=lon; a.valid=true;
+  }
+  http.end(); return a;
+}
+
+const char* aqiCategory(int aqi){
+  if(aqi<=50)  return "Good";
+  if(aqi<=100) return "Moderate";
+  if(aqi<=150) return "Unhealthy for Groups";
+  if(aqi<=200) return "Unhealthy";
+  if(aqi<=300) return "Very Unhealthy";
+  return "Hazardous";
+}
+uint16_t aqiColor(int aqi){
+  if(aqi<=50)  return ST77XX_GREEN;
+  if(aqi<=100) return ST77XX_YELLOW;
+  if(aqi<=150) return ST77XX_ORANGE;
+  if(aqi<=200) return ST77XX_RED;
+  if(aqi<=300) return ST77XX_MAGENTA;
+  return 0x8000;
 }
 
 void runWeather() {
   applyTheme();
-  tft.fillScreen(COL_BG);
-  tft.setTextColor(COL_FG); tft.setTextSize(2);
-  tft.setCursor(30, 6); tft.print("WEATHER");
+  int page=0; // 0=weather, 1=AQI
 
-  if (WiFi.status() != WL_CONNECTED) {
-    tft.setTextColor(ST77XX_RED); tft.setTextSize(1);
-    tft.setCursor(10, 68); tft.print("Not connected to WiFi.");
-    tft.setTextColor(COL_ACCENT);
-    tft.setCursor(10, 88); tft.print("Go to Settings > WiFi to connect.");
-    tft.setCursor(10, 118); tft.print("DOWN = set city manually");
-    tft.setCursor(10, 134); tft.print("MODE = back to menu");
+  // ── Helper: show weather ──────────────────────────
+  auto showWeather=[&](){
+    tft.fillScreen(COL_BG);
+    tft.setTextColor(COL_FG); tft.setTextSize(2); tft.setCursor(30,6); tft.print("WEATHER");
+    // Page tabs
+    tft.fillRoundRect(170,4,34,16,3,page==0?ST77XX_BLUE:COL_CARD);  tft.setTextColor(page==0?ST77XX_WHITE:COL_ACCENT); tft.setTextSize(1); tft.setCursor(173,9); tft.print("Wthr");
+    tft.fillRoundRect(206,4,34,16,3,page==1?ST77XX_GREEN:COL_CARD); tft.setTextColor(page==1?ST77XX_WHITE:COL_ACCENT); tft.setCursor(211,9); tft.print("AQI");
 
-    while (true) {
-      if (btnPressed(BTN_DOWN)) {
-        String city = textEntry("Enter city name:", weatherCity);
-        city.trim();
-        if (city.length() > 0) {
-          city.toCharArray(weatherCity, 34);
-          ee_writeMagic(); ee_writeStr(EE_CITY_ADDR, weatherCity, 34);
-        }
-        runWeather(); return;
+    if(WiFi.status()!=WL_CONNECTED){
+      tft.setTextColor(ST77XX_RED); tft.setTextSize(1); tft.setCursor(10,68); tft.print("No WiFi — check Settings");
+      tft.setTextColor(COL_DIM); tft.setCursor(10,110); tft.print("MODE=back");
+      return;
+    }
+
+    if(page==0){
+      tft.setTextColor(ST77XX_CYAN); tft.setTextSize(1); tft.setCursor(10,28); tft.print("Detecting location...");
+      String detectedCity=fetchCityFromIP(); String activeCity;
+      if(detectedCity.length()>0){detectedCity.toCharArray(weatherCity,34);ee_writeMagic();ee_writeStr(EE_CITY_ADDR,weatherCity,34);activeCity=detectedCity;tft.fillRect(0,24,240,14,COL_BG);tft.setTextColor(ST77XX_GREEN);tft.setTextSize(1);tft.setCursor(10,28);tft.print("GPS: ");tft.print(activeCity);}
+      else{activeCity=String(weatherCity);tft.fillRect(0,24,240,14,COL_BG);tft.setTextColor(ST77XX_CYAN);tft.setTextSize(1);tft.setCursor(10,28);tft.print(activeCity);}
+      tft.setTextColor(COL_ACCENT); tft.setCursor(10,42); tft.print("Fetching weather...");
+      WeatherData w=fetchWeather(activeCity); tft.fillRect(0,38,240,14,COL_BG);
+      if(!w.valid){tft.setTextColor(ST77XX_RED);tft.setCursor(10,58);tft.print("Fetch failed. Try again.");return;}
+      tft.setTextColor(ST77XX_ORANGE); tft.setTextSize(3); tft.setCursor(10,46); tft.print(w.temp);
+      tft.setTextColor(COL_FG); tft.setTextSize(1); tft.setCursor(10,82); tft.print(w.condition);
+      tft.drawFastHLine(6,96,228,COL_DIM);
+      struct InfoRow{const char* lbl;String val;uint16_t col;};
+      InfoRow rows[]={{"Feels like",w.feelsLike,ST77XX_CYAN},{"Humidity",w.humidity,0x07FF},{"UV Index",w.uvIndex,ST77XX_YELLOW},{"Wind",w.windSpeed,ST77XX_GREEN},{"Precip",w.precip,ST77XX_BLUE},{"Pressure",w.pressure,ST77XX_MAGENTA}};
+      for(int i=0;i<6;i++){int cx=(i%2)*120+6,cy=100+(i/2)*33;tft.fillRoundRect(cx,cy,116,29,4,COL_CARD);tft.setTextColor(COL_ACCENT);tft.setTextSize(1);tft.setCursor(cx+5,cy+4);tft.print(rows[i].lbl);tft.setTextColor(rows[i].col);tft.setCursor(cx+5,cy+16);tft.print(rows[i].val);}
+      tft.setTextColor(COL_DIM); tft.setCursor(6,202); tft.print("DOWN=refresh  UP=city  R=AQI  MODE=back");
+    } else {
+      tft.setTextColor(ST77XX_CYAN); tft.setTextSize(1); tft.setCursor(10,28); tft.print("Fetching Air Quality...");
+      AQIData aqi=fetchAQI(); tft.fillRect(0,24,240,14,COL_BG);
+      if(!aqi.valid){tft.setTextColor(ST77XX_RED);tft.setCursor(10,58);tft.print("AQI fetch failed.");return;}
+      uint16_t ac=aqiColor(aqi.aqi);
+      tft.fillRoundRect(4,28,232,50,8,ac);
+      tft.setTextColor(ST77XX_BLACK); tft.setTextSize(3); tft.setCursor(10,36); tft.print(aqi.aqi);
+      tft.setTextSize(1); tft.setCursor(70,44); tft.print("US AQI");
+      tft.setCursor(8,58); tft.print(aqiCategory(aqi.aqi));
+      tft.fillRoundRect(4,84,114,50,5,COL_CARD); tft.fillRoundRect(122,84,114,50,5,COL_CARD);
+      tft.setTextColor(COL_ACCENT); tft.setTextSize(1); tft.setCursor(8,90); tft.print("PM10 (ug/m3)");
+      tft.setTextColor(ST77XX_YELLOW); tft.setTextSize(2); tft.setCursor(8,105); tft.print(aqi.pm10_i);
+      tft.setTextColor(COL_ACCENT); tft.setTextSize(1); tft.setCursor(126,90); tft.print("PM2.5 (ug/m3)");
+      tft.setTextColor(ST77XX_ORANGE); tft.setTextSize(2); tft.setCursor(126,105); tft.print(aqi.pm25_i);
+      // Scale bar
+      tft.drawFastHLine(4,142,232,COL_DIM);
+      tft.setTextColor(COL_FG); tft.setTextSize(1); tft.setCursor(4,146); tft.print("Scale:");
+      uint16_t sc[]={ST77XX_GREEN,ST77XX_YELLOW,ST77XX_ORANGE,ST77XX_RED,ST77XX_MAGENTA,0x8000};
+      const char* sl[]={"Gd","Mo","UG","Un","Vy","Hz"};
+      for(int i=0;i<6;i++){tft.fillRoundRect(4+i*39,158,37,22,3,sc[i]);tft.setTextColor(ST77XX_BLACK);tft.setTextSize(1);tft.setCursor(10+i*39,165);tft.print(sl[i]);}
+      tft.setTextColor(COL_DIM); tft.setCursor(4,188); tft.print("L=Weather  DOWN=refresh  MODE=back");
+    }
+  };
+
+  showWeather();
+  while(true){
+    if(btnPressed(BTN_RIGHT)||btnPressed(BTN_DOWN)){
+      if(page==0){page=1;}else{page=0;}
+      showWeather();
+    }
+    if(btnPressed(BTN_LEFT)){if(page==1){page=0;showWeather();}else{currentState=STATE_MENU;return;}}
+    if(btnPressed(BTN_UP)){
+      if(page==0){
+        String city=textEntry("Enter city name:",weatherCity);
+        city.trim();if(city.length()>0){city.toCharArray(weatherCity,34);ee_writeMagic();ee_writeStr(EE_CITY_ADDR,weatherCity,34);}
+        showWeather();
       }
-      if (btnPressed(BTN_MODE) || btnPressed(BTN_LEFT)) { currentState = STATE_MENU; return; }
-      delay(10);
     }
-  }
-
-  // WiFi connected — auto-detect city from IP
-  tft.setTextColor(ST77XX_CYAN); tft.setTextSize(1);
-  tft.setCursor(10, 28); tft.print("Detecting location...");
-
-  String detectedCity = fetchCityFromIP();
-  String activeCity;
-
-  if (detectedCity.length() > 0) {
-    // Use auto-detected city; save it
-    detectedCity.toCharArray(weatherCity, 34);
-    ee_writeMagic(); ee_writeStr(EE_CITY_ADDR, weatherCity, 34);
-    activeCity = detectedCity;
-    // Show city with GPS indicator
-    tft.fillRect(0, 24, 240, 14, COL_BG);
-    tft.setTextColor(ST77XX_GREEN); tft.setTextSize(1);
-    tft.setCursor(10, 28); tft.print("\xab GPS\xbb "); tft.print(activeCity);
-  } else {
-    // Fallback to saved city
-    activeCity = String(weatherCity);
-    tft.fillRect(0, 24, 240, 14, COL_BG);
-    tft.setTextColor(ST77XX_CYAN); tft.setTextSize(1);
-    tft.setCursor(10, 28); tft.print(activeCity);
-  }
-
-  tft.setTextColor(COL_ACCENT); tft.setTextSize(1);
-  tft.setCursor(10, 42); tft.print("Fetching weather...");
-
-  WeatherData w = fetchWeather(activeCity);
-  tft.fillRect(0, 38, 240, 14, COL_BG);
-
-  if (!w.valid) {
-    tft.setTextColor(ST77XX_RED); tft.setCursor(10, 58);
-    tft.print("Fetch failed.");
-    tft.setTextColor(COL_ACCENT); tft.setCursor(10, 76);
-    tft.print("DOWN=retry  UP=type city  MODE=back");
-  } else {
-    tft.setTextColor(ST77XX_ORANGE); tft.setTextSize(3);
-    tft.setCursor(10, 46); tft.print(w.temp);
-
-    tft.setTextColor(COL_FG); tft.setTextSize(1);
-    tft.setCursor(10, 82); tft.print(w.condition);
-
-    tft.drawFastHLine(6, 96, 228, COL_DIM);
-
-    struct InfoRow { const char* lbl; String val; uint16_t col; };
-    InfoRow rows[] = {
-      { "Feels like", w.feelsLike,  ST77XX_CYAN    },
-      { "Humidity",   w.humidity,   0x07FF          },
-      { "UV Index",   w.uvIndex,    ST77XX_YELLOW  },
-      { "Wind",       w.windSpeed,  ST77XX_GREEN   },
-      { "Precip",     w.precip,     ST77XX_BLUE    },
-      { "Pressure",   w.pressure,   ST77XX_MAGENTA },
-    };
-    for (int i = 0; i < 6; i++) {
-      int cx = (i%2)*120 + 6, cy = 100 + (i/2)*33;
-      tft.fillRoundRect(cx, cy, 116, 29, 4, COL_CARD);
-      tft.setTextColor(COL_ACCENT); tft.setTextSize(1);
-      tft.setCursor(cx+5, cy+4); tft.print(rows[i].lbl);
-      tft.setTextColor(rows[i].col);
-      tft.setCursor(cx+5, cy+16); tft.print(rows[i].val);
-    }
-    tft.setTextColor(COL_DIM); tft.setTextSize(1);
-    tft.setCursor(6, 202); tft.print("DOWN=refresh  UP=city  MODE=back");
-  }
-
-  while (true) {
-    if (btnPressed(BTN_DOWN)) { runWeather(); return; }
-    if (btnPressed(BTN_UP)) {
-      String city = textEntry("Enter city name:", weatherCity);
-      city.trim();
-      if (city.length() > 0) {
-        city.toCharArray(weatherCity, 34);
-        ee_writeMagic(); ee_writeStr(EE_CITY_ADDR, weatherCity, 34);
-      }
-      runWeather(); return;
-    }
-    if (btnPressed(BTN_MODE) || btnPressed(BTN_LEFT)) { currentState = STATE_MENU; return; }
+    if(btnPressed(BTN_MODE)){currentState=STATE_MENU;return;}
     delay(10);
   }
 }
@@ -1093,149 +777,41 @@ void runWeather() {
 // ======================================================
 #define SCORE_BAR_H 20
 #define GRID 4
-
-uint32_t g_board[GRID][GRID];
-uint32_t g_prevBoard[GRID][GRID];
-uint32_t g_score     = 0;
-uint32_t g_lastScore = 0xFFFFFFFF;
-bool     g_wonAlready = false;
-
-struct TileStyle { uint16_t bg; uint16_t fg; };
-TileStyle tileStyles[] = {
-  {0x8C51,0xFFFF},{0xEF5B,0x632C},{0xEE96,0x632C},{0xF460,0xFFFF},
-  {0xF3A0,0xFFFF},{0xF260,0xFFFF},{0xF180,0xFFFF},{0xECC0,0xFFFF},
-  {0xEC80,0xFFFF},{0xEC40,0xFFFF},{0xEB80,0xFFFF},{0xEAC0,0xFFFF},{0x62C8,0xFFFF},
-};
+uint32_t g_board[GRID][GRID], g_prevBoard[GRID][GRID];
+uint32_t g_score=0, g_lastScore=0xFFFFFFFF;
+bool g_wonAlready=false;
+struct TileStyle{uint16_t bg;uint16_t fg;};
+TileStyle tileStyles[]={{0x8C51,0xFFFF},{0xEF5B,0x632C},{0xEE96,0x632C},{0xF460,0xFFFF},{0xF3A0,0xFFFF},{0xF260,0xFFFF},{0xF180,0xFFFF},{0xECC0,0xFFFF},{0xEC80,0xFFFF},{0xEC40,0xFFFF},{0xEB80,0xFFFF},{0xEAC0,0xFFFF},{0x62C8,0xFFFF}};
 #define GRID_BG 0x8430
-
-void g_saveBest() {
-  if (!ee_valid()) ee_writeMagic();
-  EEPROM.write(EE_BEST_ADDR,   (g_bestScore)       & 0xFF);
-  EEPROM.write(EE_BEST_ADDR+1, (g_bestScore >>  8) & 0xFF);
-  EEPROM.write(EE_BEST_ADDR+2, (g_bestScore >> 16) & 0xFF);
-  EEPROM.write(EE_BEST_ADDR+3, (g_bestScore >> 24) & 0xFF);
-  EEPROM.commit();
-}
-
-void g_getTileRect(int gx, int gy, int &px, int &py, int &sz) {
-  const int margin=5, gridTop=SCORE_BAR_H+margin;
-  const int gridW=SCREEN_WIDTH-margin*2, gridH=SCREEN_HEIGHT-gridTop-margin;
-  sz = (gridW-(GRID-1)*margin)/GRID;
-  int totalW=sz*GRID+(GRID-1)*margin, totalH=sz*GRID+(GRID-1)*margin;
-  int offsetX=(SCREEN_WIDTH-totalW)/2, offsetY=gridTop+(gridH-totalH)/2;
-  px=offsetX+gx*(sz+margin); py=offsetY+gy*(sz+margin);
-}
-
-int g_styleIdx(uint32_t val) {
-  if (!val) return 0;
-  int idx=0; uint32_t t=val;
-  while (t>1){t>>=1;idx++;}
-  int mx=(int)(sizeof(tileStyles)/sizeof(tileStyles[0]))-1;
-  return idx>mx?mx:idx;
-}
-
-void g_drawTile(int gx, int gy) {
-  int px,py,sz; g_getTileRect(gx,gy,px,py,sz);
-  uint32_t val=g_board[gy][gx]; int si=g_styleIdx(val);
-  if (!val) { tft.fillRoundRect(px,py,sz,sz,4,0x9CF3); return; }
-  tft.fillRoundRect(px,py,sz,sz,4,tileStyles[si].bg);
-  String s=String(val); int len=s.length();
-  uint8_t ts=(len<=2)?3:(len==3)?2:1;
-  int tx=px+(sz-6*ts*len)/2, ty=py+(sz-8*ts)/2;
-  if (tx<px+2) tx=px+2;
-  tft.setTextSize(ts); tft.setTextColor(tileStyles[si].fg);
-  tft.setCursor(tx,ty); tft.print(s);
-}
-
-void g_drawChangedTiles() {
-  for (int y=0;y<GRID;y++) for (int x=0;x<GRID;x++)
-    if (g_board[y][x]!=g_prevBoard[y][x]) { g_drawTile(x,y); g_prevBoard[y][x]=g_board[y][x]; }
-}
-
-void g_drawScore() {
-  if (g_score==g_lastScore) return;
-  g_lastScore=g_score;
-  if (g_score>g_bestScore) { g_bestScore=g_score; g_saveBest(); }
-  tft.fillRect(0,0,SCREEN_WIDTH,SCORE_BAR_H,ST77XX_BLACK);
-  tft.setTextSize(1); tft.setTextColor(ST77XX_WHITE);
-  tft.setCursor(4,6); tft.print("SCORE:"); tft.print(g_score);
-  String bs="BEST:"; bs+=g_bestScore;
-  tft.setCursor(SCREEN_WIDTH-(int)bs.length()*6-4,6); tft.print(bs);
-}
-
-void g_redrawAll() {
-  tft.fillScreen(GRID_BG);
-  for (int y=0;y<GRID;y++) for (int x=0;x<GRID;x++) {
-    g_prevBoard[y][x]=0xFFFFFFFF; g_drawTile(x,y); g_prevBoard[y][x]=g_board[y][x];
-  }
-  g_lastScore=0xFFFFFFFF; g_drawScore();
-}
-
-bool g_addRandomTile() {
-  int cnt=0, ey[GRID*GRID], ex[GRID*GRID];
-  for (int y=0;y<GRID;y++) for (int x=0;x<GRID;x++)
-    if (!g_board[y][x]) { ey[cnt]=y; ex[cnt]=x; cnt++; }
-  if (!cnt) return false;
-  int idx=random(cnt);
-  g_board[ey[idx]][ex[idx]]=(random(100)<90)?2:4;
-  return true;
-}
-
-void g_initGame() {
-  g_score=0; g_wonAlready=false; g_lastScore=0xFFFFFFFF;
-  for (int y=0;y<GRID;y++) for (int x=0;x<GRID;x++) { g_board[y][x]=0; g_prevBoard[y][x]=0xFFFFFFFF; }
-  g_addRandomTile(); g_addRandomTile();
-}
-
-void g_showOverlay(const char* msg, uint16_t color) {
-  int ow=200,oh=50,ox=(SCREEN_WIDTH-ow)/2,oy=(SCREEN_HEIGHT-oh)/2;
-  tft.fillRoundRect(ox,oy,ow,oh,8,ST77XX_BLACK);
-  tft.drawRoundRect(ox,oy,ow,oh,8,color);
-  tft.setTextColor(color); tft.setTextSize(2);
-  tft.setCursor(ox+(ow-(int)strlen(msg)*12)/2,oy+(oh-16)/2);
-  tft.print(msg);
-}
-
-bool g_slideRow(uint32_t row[]) {
-  bool moved=false;
-  uint32_t tmp[GRID]={0}; int ti=0;
-  for (int i=0;i<GRID;i++) if (row[i]) tmp[ti++]=row[i];
-  for (int i=0;i<GRID-1;i++)
-    if (tmp[i]&&tmp[i]==tmp[i+1]) { tmp[i]*=2; g_score+=tmp[i]; tmp[++i]=0; }
-  uint32_t cmp[GRID]={0}; int ci2=0;
-  for (int i=0;i<GRID;i++) if (tmp[i]) cmp[ci2++]=tmp[i];
-  for (int i=0;i<GRID;i++) { if (row[i]!=cmp[i]) { moved=true; row[i]=cmp[i]; } }
-  return moved;
-}
-
-bool g_moveLeft()  { bool m=false; for(int y=0;y<GRID;y++){uint32_t r[GRID];for(int x=0;x<GRID;x++) r[x]=g_board[y][x];       if(g_slideRow(r)){m=true;for(int x=0;x<GRID;x++) g_board[y][x]=r[x];}}      return m; }
-bool g_moveRight() { bool m=false; for(int y=0;y<GRID;y++){uint32_t r[GRID];for(int x=0;x<GRID;x++) r[x]=g_board[y][GRID-1-x]; if(g_slideRow(r)){m=true;for(int x=0;x<GRID;x++) g_board[y][GRID-1-x]=r[x];}} return m; }
-bool g_moveUp()    { bool m=false; for(int x=0;x<GRID;x++){uint32_t c[GRID];for(int y=0;y<GRID;y++) c[y]=g_board[y][x];       if(g_slideRow(c)){m=true;for(int y=0;y<GRID;y++) g_board[y][x]=c[y];}}      return m; }
-bool g_moveDown()  { bool m=false; for(int x=0;x<GRID;x++){uint32_t c[GRID];for(int y=0;y<GRID;y++) c[y]=g_board[GRID-1-y][x]; if(g_slideRow(c)){m=true;for(int y=0;y<GRID;y++) g_board[GRID-1-y][x]=c[y];}} return m; }
-
-bool g_isOver() {
-  for (int y=0;y<GRID;y++) for (int x=0;x<GRID;x++) if (!g_board[y][x]) return false;
-  for (int y=0;y<GRID;y++) for (int x=0;x<GRID-1;x++) if (g_board[y][x]==g_board[y][x+1]) return false;
-  for (int x=0;x<GRID;x++) for (int y=0;y<GRID-1;y++) if (g_board[y][x]==g_board[y+1][x]) return false;
-  return true;
-}
-
-bool run2048() {
-  g_initGame(); g_redrawAll();
-  while (true) {
+void g_saveBest(){if(!ee_valid())ee_writeMagic();EEPROM.write(EE_BEST_ADDR,(g_bestScore)&0xFF);EEPROM.write(EE_BEST_ADDR+1,(g_bestScore>>8)&0xFF);EEPROM.write(EE_BEST_ADDR+2,(g_bestScore>>16)&0xFF);EEPROM.write(EE_BEST_ADDR+3,(g_bestScore>>24)&0xFF);EEPROM.commit();}
+void g_getTileRect(int gx,int gy,int &px,int &py,int &sz){const int margin=5,gridTop=SCORE_BAR_H+margin;const int gridW=SCREEN_WIDTH-margin*2,gridH=SCREEN_HEIGHT-gridTop-margin;sz=(gridW-(GRID-1)*margin)/GRID;int totalW=sz*GRID+(GRID-1)*margin,totalH=sz*GRID+(GRID-1)*margin;int offsetX=(SCREEN_WIDTH-totalW)/2,offsetY=gridTop+(gridH-totalH)/2;px=offsetX+gx*(sz+margin);py=offsetY+gy*(sz+margin);}
+int g_styleIdx(uint32_t val){if(!val)return 0;int idx=0;uint32_t t=val;while(t>1){t>>=1;idx++;}int mx=(int)(sizeof(tileStyles)/sizeof(tileStyles[0]))-1;return idx>mx?mx:idx;}
+void g_drawTile(int gx,int gy){int px,py,sz;g_getTileRect(gx,gy,px,py,sz);uint32_t val=g_board[gy][gx];int si=g_styleIdx(val);if(!val){tft.fillRoundRect(px,py,sz,sz,4,0x9CF3);return;}tft.fillRoundRect(px,py,sz,sz,4,tileStyles[si].bg);String s=String(val);int len=s.length();uint8_t ts=(len<=2)?3:(len==3)?2:1;int tx=px+(sz-6*ts*len)/2,ty=py+(sz-8*ts)/2;if(tx<px+2)tx=px+2;tft.setTextSize(ts);tft.setTextColor(tileStyles[si].fg);tft.setCursor(tx,ty);tft.print(s);}
+void g_drawChangedTiles(){for(int y=0;y<GRID;y++)for(int x=0;x<GRID;x++)if(g_board[y][x]!=g_prevBoard[y][x]){g_drawTile(x,y);g_prevBoard[y][x]=g_board[y][x];}}
+void g_drawScore(){if(g_score==g_lastScore)return;g_lastScore=g_score;if(g_score>g_bestScore){g_bestScore=g_score;g_saveBest();}tft.fillRect(0,0,SCREEN_WIDTH,SCORE_BAR_H,ST77XX_BLACK);tft.setTextSize(1);tft.setTextColor(ST77XX_WHITE);tft.setCursor(4,6);tft.print("SCORE:");tft.print(g_score);String bs="BEST:";bs+=g_bestScore;tft.setCursor(SCREEN_WIDTH-(int)bs.length()*6-4,6);tft.print(bs);}
+void g_redrawAll(){tft.fillScreen(GRID_BG);for(int y=0;y<GRID;y++)for(int x=0;x<GRID;x++){g_prevBoard[y][x]=0xFFFFFFFF;g_drawTile(x,y);g_prevBoard[y][x]=g_board[y][x];}g_lastScore=0xFFFFFFFF;g_drawScore();}
+bool g_addRandomTile(){int cnt=0,ey[GRID*GRID],ex[GRID*GRID];for(int y=0;y<GRID;y++)for(int x=0;x<GRID;x++)if(!g_board[y][x]){ey[cnt]=y;ex[cnt]=x;cnt++;}if(!cnt)return false;int idx=random(cnt);g_board[ey[idx]][ex[idx]]=(random(100)<90)?2:4;return true;}
+void g_initGame(){g_score=0;g_wonAlready=false;g_lastScore=0xFFFFFFFF;for(int y=0;y<GRID;y++)for(int x=0;x<GRID;x++){g_board[y][x]=0;g_prevBoard[y][x]=0xFFFFFFFF;}g_addRandomTile();g_addRandomTile();}
+void g_showOverlay(const char* msg,uint16_t color){int ow=200,oh=50,ox=(SCREEN_WIDTH-ow)/2,oy=(SCREEN_HEIGHT-oh)/2;tft.fillRoundRect(ox,oy,ow,oh,8,ST77XX_BLACK);tft.drawRoundRect(ox,oy,ow,oh,8,color);tft.setTextColor(color);tft.setTextSize(2);tft.setCursor(ox+(ow-(int)strlen(msg)*12)/2,oy+(oh-16)/2);tft.print(msg);}
+bool g_slideRow(uint32_t row[]){bool moved=false;uint32_t tmp[GRID]={0};int ti=0;for(int i=0;i<GRID;i++)if(row[i])tmp[ti++]=row[i];for(int i=0;i<GRID-1;i++)if(tmp[i]&&tmp[i]==tmp[i+1]){tmp[i]*=2;g_score+=tmp[i];tmp[++i]=0;}uint32_t cmp[GRID]={0};int ci2=0;for(int i=0;i<GRID;i++)if(tmp[i])cmp[ci2++]=tmp[i];for(int i=0;i<GRID;i++){if(row[i]!=cmp[i]){moved=true;row[i]=cmp[i];}}return moved;}
+bool g_moveLeft(){bool m=false;for(int y=0;y<GRID;y++){uint32_t r[GRID];for(int x=0;x<GRID;x++)r[x]=g_board[y][x];if(g_slideRow(r)){m=true;for(int x=0;x<GRID;x++)g_board[y][x]=r[x];}}return m;}
+bool g_moveRight(){bool m=false;for(int y=0;y<GRID;y++){uint32_t r[GRID];for(int x=0;x<GRID;x++)r[x]=g_board[y][GRID-1-x];if(g_slideRow(r)){m=true;for(int x=0;x<GRID;x++)g_board[y][GRID-1-x]=r[x];}}return m;}
+bool g_moveUp(){bool m=false;for(int x=0;x<GRID;x++){uint32_t c[GRID];for(int y=0;y<GRID;y++)c[y]=g_board[y][x];if(g_slideRow(c)){m=true;for(int y=0;y<GRID;y++)g_board[y][x]=c[y];}}return m;}
+bool g_moveDown(){bool m=false;for(int x=0;x<GRID;x++){uint32_t c[GRID];for(int y=0;y<GRID;y++)c[y]=g_board[GRID-1-y][x];if(g_slideRow(c)){m=true;for(int y=0;y<GRID;y++)g_board[GRID-1-y][x]=c[y];}}return m;}
+bool g_isOver(){for(int y=0;y<GRID;y++)for(int x=0;x<GRID;x++)if(!g_board[y][x])return false;for(int y=0;y<GRID;y++)for(int x=0;x<GRID-1;x++)if(g_board[y][x]==g_board[y][x+1])return false;for(int x=0;x<GRID;x++)for(int y=0;y<GRID-1;y++)if(g_board[y][x]==g_board[y+1][x])return false;return true;}
+bool run2048(){
+  g_initGame();g_redrawAll();
+  while(true){
     bool moved=false;
-    if      (btnPressed(BTN_UP))    moved=g_moveUp();
-    else if (btnPressed(BTN_DOWN))  moved=g_moveDown();
-    else if (btnPressed(BTN_LEFT))  moved=g_moveLeft();
-    else if (btnPressed(BTN_RIGHT)) moved=g_moveRight();
-    else if (digitalRead(BTN_MODE)==LOW) {
-      delay(900); if (digitalRead(BTN_MODE)==LOW) { waitAllReleased(); return true; }
-    }
-    if (moved) {
-      g_addRandomTile(); g_drawChangedTiles(); g_drawScore();
-      if (!g_wonAlready) for(int y=0;y<GRID;y++) for(int x=0;x<GRID;x++)
-        if (g_board[y][x]==2048) { g_wonAlready=true; g_showOverlay("You Win!",ST77XX_GREEN); }
-      if (g_isOver()) { g_showOverlay("Game Over",ST77XX_RED); waitAnyPress(); g_initGame(); g_redrawAll(); }
+    if(btnPressed(BTN_UP))moved=g_moveUp();
+    else if(btnPressed(BTN_DOWN))moved=g_moveDown();
+    else if(btnPressed(BTN_LEFT))moved=g_moveLeft();
+    else if(btnPressed(BTN_RIGHT))moved=g_moveRight();
+    else if(digitalRead(BTN_MODE)==LOW){delay(900);if(digitalRead(BTN_MODE)==LOW){waitAllReleased();return true;}}
+    if(moved){
+      g_addRandomTile();g_drawChangedTiles();g_drawScore();buzzClick();
+      if(!g_wonAlready)for(int y=0;y<GRID;y++)for(int x=0;x<GRID;x++)if(g_board[y][x]==2048){g_wonAlready=true;g_showOverlay("You Win!",ST77XX_GREEN);buzzWin();}
+      if(g_isOver()){g_showOverlay("Game Over",ST77XX_RED);buzzGameOver();waitAnyPress();g_initGame();g_redrawAll();}
     }
     delay(10);
   }
@@ -1245,474 +821,1294 @@ bool run2048() {
 //  G A M E  2  —  T E T R I S
 // ======================================================
 #define T_BLOCK_SIZE 10
-#define T_COLS       10
-#define T_ROWS       20
-#define T_BOARD_X    ((SCREEN_WIDTH  - T_COLS * T_BLOCK_SIZE) / 2)
-#define T_BOARD_Y    ((SCREEN_HEIGHT - T_ROWS * T_BLOCK_SIZE) / 2)
-
+#define T_COLS 10
+#define T_ROWS 20
+#define T_BOARD_X ((SCREEN_WIDTH-T_COLS*T_BLOCK_SIZE)/2)
+#define T_BOARD_Y ((SCREEN_HEIGHT-T_ROWS*T_BLOCK_SIZE)/2)
 uint8_t tBoard[T_ROWS][T_COLS];
 unsigned long tLastFall=0;
 bool tGameOver=false;
 unsigned long tScore=0;
-int tLevel=0, tLines=0;
-
-const uint8_t tPieces[7][4][4][4] PROGMEM = {
-  {{{0,0,0,0},{1,1,1,1},{0,0,0,0},{0,0,0,0}},{{0,0,1,0},{0,0,1,0},{0,0,1,0},{0,0,1,0}},
-   {{0,0,0,0},{1,1,1,1},{0,0,0,0},{0,0,0,0}},{{0,1,0,0},{0,1,0,0},{0,1,0,0},{0,1,0,0}}},
-  {{{1,0,0,0},{1,1,1,0},{0,0,0,0},{0,0,0,0}},{{0,1,1,0},{0,1,0,0},{0,1,0,0},{0,0,0,0}},
-   {{0,0,0,0},{1,1,1,0},{0,0,1,0},{0,0,0,0}},{{0,1,0,0},{0,1,0,0},{1,1,0,0},{0,0,0,0}}},
-  {{{0,0,1,0},{1,1,1,0},{0,0,0,0},{0,0,0,0}},{{0,1,0,0},{0,1,0,0},{0,1,1,0},{0,0,0,0}},
-   {{0,0,0,0},{1,1,1,0},{1,0,0,0},{0,0,0,0}},{{1,1,0,0},{0,1,0,0},{0,1,0,0},{0,0,0,0}}},
-  {{{0,1,1,0},{0,1,1,0},{0,0,0,0},{0,0,0,0}},{{0,1,1,0},{0,1,1,0},{0,0,0,0},{0,0,0,0}},
-   {{0,1,1,0},{0,1,1,0},{0,0,0,0},{0,0,0,0}},{{0,1,1,0},{0,1,1,0},{0,0,0,0},{0,0,0,0}}},
-  {{{0,1,1,0},{1,1,0,0},{0,0,0,0},{0,0,0,0}},{{0,1,0,0},{0,1,1,0},{0,0,1,0},{0,0,0,0}},
-   {{0,0,0,0},{0,1,1,0},{1,1,0,0},{0,0,0,0}},{{1,0,0,0},{1,1,0,0},{0,1,0,0},{0,0,0,0}}},
-  {{{0,1,0,0},{1,1,1,0},{0,0,0,0},{0,0,0,0}},{{0,1,0,0},{0,1,1,0},{0,1,0,0},{0,0,0,0}},
-   {{0,0,0,0},{1,1,1,0},{0,1,0,0},{0,0,0,0}},{{0,1,0,0},{1,1,0,0},{0,1,0,0},{0,0,0,0}}},
-  {{{1,1,0,0},{0,1,1,0},{0,0,0,0},{0,0,0,0}},{{0,0,1,0},{0,1,1,0},{0,1,0,0},{0,0,0,0}},
-   {{0,0,0,0},{1,1,0,0},{0,1,1,0},{0,0,0,0}},{{0,1,0,0},{1,1,0,0},{1,0,0,0},{0,0,0,0}}}
+int tLevel=0,tLines=0;
+const uint8_t tPieces[7][4][4][4] PROGMEM={
+  {{{0,0,0,0},{1,1,1,1},{0,0,0,0},{0,0,0,0}},{{0,0,1,0},{0,0,1,0},{0,0,1,0},{0,0,1,0}},{{0,0,0,0},{1,1,1,1},{0,0,0,0},{0,0,0,0}},{{0,1,0,0},{0,1,0,0},{0,1,0,0},{0,1,0,0}}},
+  {{{1,0,0,0},{1,1,1,0},{0,0,0,0},{0,0,0,0}},{{0,1,1,0},{0,1,0,0},{0,1,0,0},{0,0,0,0}},{{0,0,0,0},{1,1,1,0},{0,0,1,0},{0,0,0,0}},{{0,1,0,0},{0,1,0,0},{1,1,0,0},{0,0,0,0}}},
+  {{{0,0,1,0},{1,1,1,0},{0,0,0,0},{0,0,0,0}},{{0,1,0,0},{0,1,0,0},{0,1,1,0},{0,0,0,0}},{{0,0,0,0},{1,1,1,0},{1,0,0,0},{0,0,0,0}},{{1,1,0,0},{0,1,0,0},{0,1,0,0},{0,0,0,0}}},
+  {{{0,1,1,0},{0,1,1,0},{0,0,0,0},{0,0,0,0}},{{0,1,1,0},{0,1,1,0},{0,0,0,0},{0,0,0,0}},{{0,1,1,0},{0,1,1,0},{0,0,0,0},{0,0,0,0}},{{0,1,1,0},{0,1,1,0},{0,0,0,0},{0,0,0,0}}},
+  {{{0,1,1,0},{1,1,0,0},{0,0,0,0},{0,0,0,0}},{{0,1,0,0},{0,1,1,0},{0,0,1,0},{0,0,0,0}},{{0,0,0,0},{0,1,1,0},{1,1,0,0},{0,0,0,0}},{{1,0,0,0},{1,1,0,0},{0,1,0,0},{0,0,0,0}}},
+  {{{0,1,0,0},{1,1,1,0},{0,0,0,0},{0,0,0,0}},{{0,1,0,0},{0,1,1,0},{0,1,0,0},{0,0,0,0}},{{0,0,0,0},{1,1,1,0},{0,1,0,0},{0,0,0,0}},{{0,1,0,0},{1,1,0,0},{0,1,0,0},{0,0,0,0}}},
+  {{{1,1,0,0},{0,1,1,0},{0,0,0,0},{0,0,0,0}},{{0,0,1,0},{0,1,1,0},{0,1,0,0},{0,0,0,0}},{{0,0,0,0},{1,1,0,0},{0,1,1,0},{0,0,0,0}},{{0,1,0,0},{1,1,0,0},{1,0,0,0},{0,0,0,0}}}
 };
-
 uint16_t tColors[7]={ST77XX_CYAN,ST77XX_BLUE,ST77XX_ORANGE,ST77XX_YELLOW,ST77XX_GREEN,ST77XX_MAGENTA,ST77XX_RED};
 int tPieceType=0,tPieceRot=0,tPieceX=3,tPieceY=0,tNextType=0;
 const unsigned int tFallDelays[]={1000,793,630,504,400,310,250,200,160,120,100,83,66,50,40,30,20,16,16,16};
 const int tLineScore[5]={0,40,100,300,1200};
-
 void t_reset(){memset(tBoard,0,sizeof(tBoard));tScore=0;tLevel=0;tLines=0;tGameOver=false;tPieceType=random(7);tNextType=random(7);tPieceRot=0;tPieceX=3;tPieceY=0;tLastFall=millis();}
-bool t_tryMove(int dx,int dy,int rot){for(int i=0;i<4;i++) for(int j=0;j<4;j++) if(pgm_read_byte(&tPieces[tPieceType][rot][i][j])){int nx=tPieceX+j+dx,ny=tPieceY+i+dy;if(nx<0||nx>=T_COLS||ny>=T_ROWS) return false;if(ny>=0&&tBoard[ny][nx]) return false;}return true;}
-void t_place(){for(int i=0;i<4;i++) for(int j=0;j<4;j++) if(pgm_read_byte(&tPieces[tPieceType][tPieceRot][i][j])){int x=tPieceX+j,y=tPieceY+i;if(y<0){tGameOver=true;return;}tBoard[y][x]=tPieceType+1;}}
-int  t_clearLines(){int cl=0;for(int y=T_ROWS-1;y>=0;y--){bool full=true;for(int x=0;x<T_COLS;x++) if(!tBoard[y][x]){full=false;break;}if(full){cl++;for(int ty=y;ty>0;ty--) for(int tx=0;tx<T_COLS;tx++) tBoard[ty][tx]=tBoard[ty-1][tx];for(int tx=0;tx<T_COLS;tx++) tBoard[0][tx]=0;y++;}}return cl;}
+bool t_tryMove(int dx,int dy,int rot){for(int i=0;i<4;i++)for(int j=0;j<4;j++)if(pgm_read_byte(&tPieces[tPieceType][rot][i][j])){int nx=tPieceX+j+dx,ny=tPieceY+i+dy;if(nx<0||nx>=T_COLS||ny>=T_ROWS)return false;if(ny>=0&&tBoard[ny][nx])return false;}return true;}
+void t_place(){for(int i=0;i<4;i++)for(int j=0;j<4;j++)if(pgm_read_byte(&tPieces[tPieceType][tPieceRot][i][j])){int x=tPieceX+j,y=tPieceY+i;if(y<0){tGameOver=true;return;}tBoard[y][x]=tPieceType+1;}}
+int  t_clearLines(){int cl=0;for(int y=T_ROWS-1;y>=0;y--){bool full=true;for(int x=0;x<T_COLS;x++)if(!tBoard[y][x]){full=false;break;}if(full){cl++;for(int ty=y;ty>0;ty--)for(int tx=0;tx<T_COLS;tx++)tBoard[ty][tx]=tBoard[ty-1][tx];for(int tx=0;tx<T_COLS;tx++)tBoard[0][tx]=0;y++;}}return cl;}
 void t_spawn(){tPieceType=tNextType;tNextType=random(7);tPieceRot=0;tPieceX=3;tPieceY=0;if(!t_tryMove(0,0,tPieceRot))tGameOver=true;}
 void t_drawBlock(int x,int y,uint16_t c){tft.fillRect(T_BOARD_X+x*T_BLOCK_SIZE,T_BOARD_Y+y*T_BLOCK_SIZE,T_BLOCK_SIZE-1,T_BLOCK_SIZE-1,c);}
-void t_drawBoard(){tft.fillRect(T_BOARD_X,T_BOARD_Y,T_COLS*T_BLOCK_SIZE,T_ROWS*T_BLOCK_SIZE,ST77XX_BLACK);for(int y=0;y<T_ROWS;y++) for(int x=0;x<T_COLS;x++) if(tBoard[y][x]) t_drawBlock(x,y,tColors[tBoard[y][x]-1]);for(int i=0;i<4;i++) for(int j=0;j<4;j++) if(pgm_read_byte(&tPieces[tPieceType][tPieceRot][i][j])) t_drawBlock(tPieceX+j,tPieceY+i,tColors[tPieceType]);tft.drawRect(T_BOARD_X-2,T_BOARD_Y-2,T_COLS*T_BLOCK_SIZE+4,T_ROWS*T_BLOCK_SIZE+4,ST77XX_WHITE);}
+void t_drawBoard(){tft.fillRect(T_BOARD_X,T_BOARD_Y,T_COLS*T_BLOCK_SIZE,T_ROWS*T_BLOCK_SIZE,ST77XX_BLACK);for(int y=0;y<T_ROWS;y++)for(int x=0;x<T_COLS;x++)if(tBoard[y][x])t_drawBlock(x,y,tColors[tBoard[y][x]-1]);for(int i=0;i<4;i++)for(int j=0;j<4;j++)if(pgm_read_byte(&tPieces[tPieceType][tPieceRot][i][j]))t_drawBlock(tPieceX+j,tPieceY+i,tColors[tPieceType]);tft.drawRect(T_BOARD_X-2,T_BOARD_Y-2,T_COLS*T_BLOCK_SIZE+4,T_ROWS*T_BLOCK_SIZE+4,ST77XX_WHITE);}
 void t_drawHUD(){tft.fillRect(0,0,SCREEN_WIDTH,18,ST77XX_BLACK);tft.setTextSize(1);tft.setTextColor(ST77XX_WHITE);tft.setCursor(2,5);tft.print("Sc:");tft.print(tScore);tft.setCursor(80,5);tft.print("Lv:");tft.print(tLevel);tft.setCursor(140,5);tft.print("Ln:");tft.print(tLines);}
-void t_drawNext(){int nx=T_BOARD_X+T_COLS*T_BLOCK_SIZE+8;tft.fillRect(nx,T_BOARD_Y,50,50,ST77XX_BLACK);tft.setTextSize(1);tft.setTextColor(ST77XX_WHITE);tft.setCursor(nx,T_BOARD_Y);tft.print("Next");for(int i=0;i<4;i++) for(int j=0;j<4;j++) if(pgm_read_byte(&tPieces[tNextType][0][i][j])) tft.fillRect(nx+j*T_BLOCK_SIZE,T_BOARD_Y+12+i*T_BLOCK_SIZE,T_BLOCK_SIZE-1,T_BLOCK_SIZE-1,tColors[tNextType]);}
+void t_drawNext(){int nx=T_BOARD_X+T_COLS*T_BLOCK_SIZE+8;tft.fillRect(nx,T_BOARD_Y,50,50,ST77XX_BLACK);tft.setTextSize(1);tft.setTextColor(ST77XX_WHITE);tft.setCursor(nx,T_BOARD_Y);tft.print("Next");for(int i=0;i<4;i++)for(int j=0;j<4;j++)if(pgm_read_byte(&tPieces[tNextType][0][i][j]))tft.fillRect(nx+j*T_BLOCK_SIZE,T_BOARD_Y+12+i*T_BLOCK_SIZE,T_BLOCK_SIZE-1,T_BLOCK_SIZE-1,tColors[tNextType]);}
 void t_drawAll(){t_drawBoard();t_drawHUD();t_drawNext();}
-void t_handleInput(){
-  if(digitalRead(BTN_LEFT)==LOW) {if(t_tryMove(-1,0,tPieceRot))tPieceX--;t_drawAll();delay(150);}
-  if(digitalRead(BTN_RIGHT)==LOW){if(t_tryMove(1,0,tPieceRot)) tPieceX++;t_drawAll();delay(150);}
-  if(digitalRead(BTN_UP)==LOW)   {int nr=(tPieceRot+1)%4;if(t_tryMove(0,0,nr))tPieceRot=nr;t_drawAll();delay(200);}
-  if(digitalRead(BTN_DOWN)==LOW) {if(t_tryMove(0,1,tPieceRot))tPieceY++;else{t_place();int cl=t_clearLines();if(cl>0){tScore+=tLineScore[cl]*(tLevel+1);tLines+=cl;if(tLines/10>tLevel)tLevel=tLines/10;}t_spawn();}t_drawAll();delay(50);}
-}
-
-bool runTetris() {
-  tft.fillScreen(ST77XX_BLACK); t_reset(); t_drawAll();
-  while (true) {
-    if (tGameOver){tft.fillRect(T_BOARD_X,SCREEN_HEIGHT/2-20,T_COLS*T_BLOCK_SIZE,40,ST77XX_BLACK);tft.setCursor(T_BOARD_X+5,SCREEN_HEIGHT/2-10);tft.setTextColor(ST77XX_RED);tft.setTextSize(2);tft.print("GAME OVER");waitAnyPress();return true;}
-    if (digitalRead(BTN_MODE)==LOW){delay(900);if(digitalRead(BTN_MODE)==LOW){waitAllReleased();return true;}}
-    t_handleInput();
+bool runTetris(){
+  tft.fillScreen(ST77XX_BLACK);t_reset();t_drawAll();
+  while(true){
+    if(tGameOver){tft.fillRect(T_BOARD_X,SCREEN_HEIGHT/2-20,T_COLS*T_BLOCK_SIZE,40,ST77XX_BLACK);tft.setCursor(T_BOARD_X+5,SCREEN_HEIGHT/2-10);tft.setTextColor(ST77XX_RED);tft.setTextSize(2);tft.print("GAME OVER");buzzGameOver();waitAnyPress();return true;}
+    if(digitalRead(BTN_MODE)==LOW){delay(900);if(digitalRead(BTN_MODE)==LOW){waitAllReleased();return true;}}
+    if(digitalRead(BTN_LEFT)==LOW){if(t_tryMove(-1,0,tPieceRot))tPieceX--;t_drawAll();delay(150);}
+    if(digitalRead(BTN_RIGHT)==LOW){if(t_tryMove(1,0,tPieceRot))tPieceX++;t_drawAll();delay(150);}
+    if(digitalRead(BTN_UP)==LOW){int nr=(tPieceRot+1)%4;if(t_tryMove(0,0,nr))tPieceRot=nr;t_drawAll();delay(200);}
+    if(digitalRead(BTN_DOWN)==LOW){
+      if(t_tryMove(0,1,tPieceRot))tPieceY++;
+      else{t_place();int cl=t_clearLines();if(cl>0){tScore+=tLineScore[cl]*(tLevel+1);tLines+=cl;if(tLines/10>tLevel)tLevel=tLines/10;buzzPoints();}t_spawn();}
+      t_drawAll();delay(50);
+    }
     unsigned long now=millis();
     int idx=constrain(tLevel,0,(int)(sizeof(tFallDelays)/sizeof(tFallDelays[0]))-1);
-    if (now-tLastFall>=tFallDelays[idx]){if(!t_tryMove(0,1,tPieceRot)){t_place();int cl=t_clearLines();if(cl>0){tScore+=tLineScore[cl]*(tLevel+1);tLines+=cl;if(tLines/10>tLevel)tLevel=tLines/10;}t_spawn();}else tPieceY++;tLastFall=now;t_drawAll();}
+    if(now-tLastFall>=tFallDelays[idx]){
+      if(!t_tryMove(0,1,tPieceRot)){t_place();int cl=t_clearLines();if(cl>0){tScore+=tLineScore[cl]*(tLevel+1);tLines+=cl;if(tLines/10>tLevel)tLevel=tLines/10;buzzPoints();}t_spawn();}
+      else tPieceY++;
+      tLastFall=now;t_drawAll();
+    }
   }
 }
 
 // ======================================================
-//  G A M E  3  —  P O N G  (vs CPU)
-//  BTN_LEFT = paddle UP    BTN_UP = paddle DOWN
+//  G A M E  3  —  P O N G
 // ======================================================
-#define P_PADDLE_W  6
-#define P_PADDLE_H  40
-#define P_BALL_SZ   6
+#define P_PADDLE_W 6
+#define P_PADDLE_H 40
+#define P_BALL_SZ  6
 #define P_PAD_SPEED 3
 #define P_BALL_SPD  2
-
-int pP1Y,pP2Y,pLastP1Y,pLastP2Y;
-int pBallX,pBallY,pBallVX,pBallVY,pLastBX,pLastBY;
-int pScore1,pScore2,pLastScore1,pLastScore2;
-
-void p_drawCenterLine(){for(int y=0;y<SCREEN_HEIGHT;y+=10) tft.drawFastVLine(SCREEN_WIDTH/2,y,5,0x4208);}
+int pP1Y,pP2Y,pLastP1Y,pLastP2Y,pBallX,pBallY,pBallVX,pBallVY,pLastBX,pLastBY,pScore1,pScore2,pLastScore1,pLastScore2;
+void p_drawCenterLine(){for(int y=0;y<SCREEN_HEIGHT;y+=10)tft.drawFastVLine(SCREEN_WIDTH/2,y,5,0x4208);}
 void p_drawScore(){tft.fillRect(SCREEN_WIDTH/2-50,0,100,12,ST77XX_BLACK);tft.setTextSize(1);tft.setTextColor(ST77XX_WHITE);tft.setCursor(SCREEN_WIDTH/2-44,2);tft.print("YOU:");tft.print(pScore1);tft.setCursor(SCREEN_WIDTH/2+10,2);tft.print("CPU:");tft.print(pScore2);}
 void p_resetBall(){tft.fillRect(pBallX,pBallY,P_BALL_SZ,P_BALL_SZ,ST77XX_BLACK);pBallX=SCREEN_WIDTH/2;pBallY=SCREEN_HEIGHT/2;pBallVX=(random(2)==0)?P_BALL_SPD:-P_BALL_SPD;pBallVY=(random(2)==0)?P_BALL_SPD:-P_BALL_SPD;}
 void p_initGame(){pP1Y=(SCREEN_HEIGHT-P_PADDLE_H)/2;pP2Y=pP1Y;pLastP1Y=pP1Y;pLastP2Y=pP2Y;pBallX=SCREEN_WIDTH/2;pBallY=SCREEN_HEIGHT/2;pBallVX=P_BALL_SPD;pBallVY=P_BALL_SPD;pLastBX=pBallX;pLastBY=pBallY;pScore1=0;pScore2=0;pLastScore1=-1;pLastScore2=-1;}
-void p_moveBall(){pBallX+=pBallVX;pBallY+=pBallVY;if(pBallY<=0||pBallY>=SCREEN_HEIGHT-P_BALL_SZ)pBallVY=-pBallVY;if(pBallX<=P_PADDLE_W+2){if(pBallY+P_BALL_SZ>=pP1Y&&pBallY<=pP1Y+P_PADDLE_H)pBallVX=-pBallVX;else{pScore2++;p_resetBall();}}if(pBallX+P_BALL_SZ>=SCREEN_WIDTH-P_PADDLE_W-2){if(pBallY+P_BALL_SZ>=pP2Y&&pBallY<=pP2Y+P_PADDLE_H)pBallVX=-pBallVX;else{pScore1++;p_resetBall();}}}
+void p_moveBall(){pBallX+=pBallVX;pBallY+=pBallVY;if(pBallY<=0||pBallY>=SCREEN_HEIGHT-P_BALL_SZ)pBallVY=-pBallVY;if(pBallX<=P_PADDLE_W+2){if(pBallY+P_BALL_SZ>=pP1Y&&pBallY<=pP1Y+P_PADDLE_H){pBallVX=-pBallVX;buzzClick();}else{pScore2++;buzz(200,100);p_resetBall();}}if(pBallX+P_BALL_SZ>=SCREEN_WIDTH-P_PADDLE_W-2){if(pBallY+P_BALL_SZ>=pP2Y&&pBallY<=pP2Y+P_PADDLE_H){pBallVX=-pBallVX;}else{pScore1++;buzzPoints();p_resetBall();}}}
 void p_moveCPU(){if(pBallY<pP2Y+P_PADDLE_H/2&&pP2Y>0)pP2Y-=P_PAD_SPEED;else if(pBallY>pP2Y+P_PADDLE_H/2&&pP2Y<SCREEN_HEIGHT-P_PADDLE_H)pP2Y+=P_PAD_SPEED;}
-void p_updateGraphics(){
-  if(pLastP1Y!=pP1Y){tft.fillRect(2,pLastP1Y,P_PADDLE_W,P_PADDLE_H,ST77XX_BLACK);tft.fillRect(2,pP1Y,P_PADDLE_W,P_PADDLE_H,ST77XX_GREEN);pLastP1Y=pP1Y;}
-  if(pLastP2Y!=pP2Y){tft.fillRect(SCREEN_WIDTH-P_PADDLE_W-2,pLastP2Y,P_PADDLE_W,P_PADDLE_H,ST77XX_BLACK);tft.fillRect(SCREEN_WIDTH-P_PADDLE_W-2,pP2Y,P_PADDLE_W,P_PADDLE_H,ST77XX_RED);pLastP2Y=pP2Y;}
-  if(pLastBX!=pBallX||pLastBY!=pBallY){tft.fillRect(pLastBX,pLastBY,P_BALL_SZ,P_BALL_SZ,ST77XX_BLACK);tft.fillRect(pBallX,pBallY,P_BALL_SZ,P_BALL_SZ,ST77XX_WHITE);pLastBX=pBallX;pLastBY=pBallY;}
-  if(pScore1!=pLastScore1||pScore2!=pLastScore2){p_drawScore();pLastScore1=pScore1;pLastScore2=pScore2;}
-}
-
-bool runPong() {
-  tft.fillScreen(ST77XX_BLACK); p_initGame(); p_drawCenterLine(); p_drawScore();
+void p_updateGraphics(){if(pLastP1Y!=pP1Y){tft.fillRect(2,pLastP1Y,P_PADDLE_W,P_PADDLE_H,ST77XX_BLACK);tft.fillRect(2,pP1Y,P_PADDLE_W,P_PADDLE_H,ST77XX_GREEN);pLastP1Y=pP1Y;}if(pLastP2Y!=pP2Y){tft.fillRect(SCREEN_WIDTH-P_PADDLE_W-2,pLastP2Y,P_PADDLE_W,P_PADDLE_H,ST77XX_BLACK);tft.fillRect(SCREEN_WIDTH-P_PADDLE_W-2,pP2Y,P_PADDLE_W,P_PADDLE_H,ST77XX_RED);pLastP2Y=pP2Y;}if(pLastBX!=pBallX||pLastBY!=pBallY){tft.fillRect(pLastBX,pLastBY,P_BALL_SZ,P_BALL_SZ,ST77XX_BLACK);tft.fillRect(pBallX,pBallY,P_BALL_SZ,P_BALL_SZ,ST77XX_WHITE);pLastBX=pBallX;pLastBY=pBallY;}if(pScore1!=pLastScore1||pScore2!=pLastScore2){p_drawScore();pLastScore1=pScore1;pLastScore2=pScore2;}}
+bool runPong(){
+  tft.fillScreen(ST77XX_BLACK);p_initGame();p_drawCenterLine();p_drawScore();
   tft.setTextSize(1);tft.setTextColor(ST77XX_YELLOW);tft.setCursor(58,14);tft.print("vs CPU");
   tft.fillRect(2,pP1Y,P_PADDLE_W,P_PADDLE_H,ST77XX_GREEN);
   tft.fillRect(SCREEN_WIDTH-P_PADDLE_W-2,pP2Y,P_PADDLE_W,P_PADDLE_H,ST77XX_RED);
   tft.fillRect(pBallX,pBallY,P_BALL_SZ,P_BALL_SZ,ST77XX_WHITE);
-  while (true) {
-    if (digitalRead(BTN_LEFT)==LOW&&pP1Y>0)                  pP1Y-=P_PAD_SPEED;
-    if (digitalRead(BTN_UP)  ==LOW&&pP1Y<SCREEN_HEIGHT-P_PADDLE_H) pP1Y+=P_PAD_SPEED;
-    p_moveCPU(); p_moveBall(); p_updateGraphics();
-    if (digitalRead(BTN_MODE)==LOW){delay(900);if(digitalRead(BTN_MODE)==LOW){waitAllReleased();return true;}}
+  while(true){
+    if(digitalRead(BTN_LEFT)==LOW&&pP1Y>0)pP1Y-=P_PAD_SPEED;
+    if(digitalRead(BTN_UP)==LOW&&pP1Y<SCREEN_HEIGHT-P_PADDLE_H)pP1Y+=P_PAD_SPEED;
+    p_moveCPU();p_moveBall();p_updateGraphics();
+    if(digitalRead(BTN_MODE)==LOW){delay(900);if(digitalRead(BTN_MODE)==LOW){waitAllReleased();return true;}}
     delay(10);
   }
 }
 
 // ======================================================
-//  S M S   (Twilio REST API over WiFi)
+//  G A M E  4  —  F L A P P Y  B I R D
 // ======================================================
-
-// URL-encode a string for HTTP POST body
-String urlEncode(const String& s) {
-  String out = "";
-  for (int i = 0; i < (int)s.length(); i++) {
-    char c = s[i];
-    if (isAlphaNumeric(c) || c=='-' || c=='_' || c=='.' || c=='~') {
-      out += c;
-    } else {
-      char buf[4];
-      sprintf(buf, "%%%02X", (uint8_t)c);
-      out += buf;
+#define FB_SKY 0x5DFF
+#define FB_SKY2 0x867F
+#define FB_SUN 0xFFE0
+#define FB_GROUND_C 0xD4A0
+#define FB_GRASS_C 0x2604
+#define FB_PIPE_C 0x0600
+#define FB_PIPE_DARK 0x0400
+#define FB_PIPE_LIT 0x27E4
+#define FB_PIPE_CAP 0x03A0
+#define FB_BIRD_X 50
+#define FB_BIRD_W 18
+#define FB_BIRD_H 14
+#define FB_PIPE_W 28
+#define FB_PIPE_GAP 62
+#define FB_PIPE_SPD 3
+#define FB_GRAVITY 0.38f
+#define FB_JUMP_VEL -5.0f
+#define FB_FRAME_MS 40
+#define FB_GROUND_Y 210
+#define FB_SPR_W 34
+#define FB_SPR_H 22
+#define FB_MAX_PIPES 3
+#define FB_NUM_SCR 5
+#define FB_TRANS 0xDEAD
+enum FBState{FB_TITLE,FB_PLAYING,FB_DEAD,FB_SCORES};
+FBState fb_state;
+float fb_birdY,fb_birdVel;
+int fb_birdFrame;
+uint32_t fb_lastFrame,fb_animTimer,fb_deadTimer;
+uint16_t fb_score,fb_prevScore,fb_hi[FB_NUM_SCR];
+struct FBPipe{int16_t x,prevX,topH;bool scored;};
+FBPipe fb_pipes[FB_MAX_PIPES];
+inline uint16_t fb_bgAt(int y){if(y>=FB_GROUND_Y+5)return FB_GROUND_C;if(y>=FB_GROUND_Y)return FB_GRASS_C;return(y<FB_GROUND_Y/2)?FB_SKY2:FB_SKY;}
+void fb_eraseBg(int x,int y,int w,int h){if(x<0){w+=x;x=0;}if(y<0){h+=y;y=0;}if(x+w>240)w=240-x;if(y+h>240)h=240-y;if(w<=0||h<=0)return;int bot=y+h,mid=FB_GROUND_Y/2;int y0=y,y1=(mid<bot)?mid:bot;if(y1>y0)tft.fillRect(x,y0,w,y1-y0,FB_SKY2);y0=(mid>y)?mid:y;y1=(FB_GROUND_Y<bot)?FB_GROUND_Y:bot;if(y1>y0)tft.fillRect(x,y0,w,y1-y0,FB_SKY);y0=(FB_GROUND_Y>y)?FB_GROUND_Y:y;if(y0<bot){int gb=y0+5;if(gb>bot)gb=bot;tft.fillRect(x,y0,w,gb-y0,FB_GRASS_C);if(gb<bot)tft.fillRect(x,gb,w,bot-gb,FB_GROUND_C);}}
+void fb_drawPipe(int x,int topH){if(x+FB_PIPE_W+3<0||x-3>=240)return;int bt=topH+FB_PIPE_GAP,bh=FB_GROUND_Y-bt,cx=x-3,cw=FB_PIPE_W+6;tft.fillRect(x,0,FB_PIPE_W,topH,FB_PIPE_C);tft.fillRect(x,0,3,topH,FB_PIPE_LIT);tft.fillRect(x+FB_PIPE_W-3,0,3,topH,FB_PIPE_DARK);if(cx<240&&cx+cw>0){tft.fillRect(cx,topH-12,cw,12,FB_PIPE_CAP);}if(bh>0){tft.fillRect(x,bt,FB_PIPE_W,bh,FB_PIPE_C);if(cx<240&&cx+cw>0){tft.fillRect(cx,bt,cw,12,FB_PIPE_CAP);}}}
+void fb_erasePipe(int px){int ex=px+FB_PIPE_W-1,ew=FB_PIPE_SPD+4;if(ex>=240)return;if(ex+ew>240)ew=240-ex;fb_eraseBg(ex,0,ew,FB_GROUND_Y);int cx2=px-3;if(cx2>=0)fb_eraseBg(cx2,0,FB_PIPE_SPD+2,FB_GROUND_Y);}
+void fb_hud(uint16_t sc){tft.fillRect(75,4,90,26,FB_SKY2);int cx2=120-(sc<10?9:sc<100?18:27);tft.setTextSize(3);tft.setTextColor(0x0000);tft.setCursor(cx2+1,11);tft.print(sc);tft.setTextColor(0xFFFF);tft.setCursor(cx2,10);tft.print(sc);}
+void fb_bg(){tft.fillRect(0,0,240,FB_GROUND_Y/2,FB_SKY2);tft.fillRect(0,FB_GROUND_Y/2,240,FB_GROUND_Y-FB_GROUND_Y/2,FB_SKY);tft.fillCircle(195,28,16,FB_SUN);tft.fillRect(0,FB_GROUND_Y,240,240-FB_GROUND_Y,FB_GROUND_C);tft.fillRect(0,FB_GROUND_Y,240,5,FB_GRASS_C);}
+void fb_drawBird(int wx,int wy){int tilt=(fb_birdVel>2.5f)?2:(fb_birdVel<-2.5f)?-2:0;tft.fillRoundRect(wx,wy+tilt,FB_BIRD_W,FB_BIRD_H,4,ST77XX_YELLOW);tft.fillCircle(wx+FB_BIRD_W-4,wy+tilt+3,3,ST77XX_WHITE);tft.fillCircle(wx+FB_BIRD_W-3,wy+tilt+3,2,ST77XX_BLACK);tft.fillRect(wx+FB_BIRD_W,wy+tilt+5,5,4,ST77XX_ORANGE);}
+void fb_loadHi(){for(int i=0;i<FB_NUM_SCR;i++){uint16_t v=((uint16_t)EEPROM.read(EE_FB_ADDR+i*2)<<8)|EEPROM.read(EE_FB_ADDR+i*2+1);fb_hi[i]=(v==0xFFFF)?0:v;}}
+void fb_saveHi(uint16_t sc){for(int i=0;i<FB_NUM_SCR;i++){if(sc>fb_hi[i]){for(int j=FB_NUM_SCR-1;j>i;j--)fb_hi[j]=fb_hi[j-1];fb_hi[i]=sc;break;}}for(int i=0;i<FB_NUM_SCR;i++){EEPROM.write(EE_FB_ADDR+i*2,fb_hi[i]>>8);EEPROM.write(EE_FB_ADDR+i*2+1,fb_hi[i]&0xFF);}EEPROM.commit();}
+void fb_update(){fb_birdVel+=FB_GRAVITY;fb_birdY+=fb_birdVel;if(millis()-fb_animTimer>110){fb_animTimer=millis();fb_birdFrame=(fb_birdFrame+1)%3;}for(int i=0;i<FB_MAX_PIPES;i++){fb_pipes[i].prevX=fb_pipes[i].x;fb_pipes[i].x-=FB_PIPE_SPD;if(!fb_pipes[i].scored&&fb_pipes[i].x+FB_PIPE_W<FB_BIRD_X){fb_pipes[i].scored=true;fb_score++;buzzPoints();}if(fb_pipes[i].x+FB_PIPE_W<0){fb_pipes[i].x=fb_pipes[i].prevX=240+10;fb_pipes[i].topH=random(30,FB_GROUND_Y-FB_PIPE_GAP-30);fb_pipes[i].scored=false;}}int bx1=FB_BIRD_X+2,bx2=FB_BIRD_X+FB_BIRD_W-2;int by1=(int)fb_birdY+2,by2=(int)fb_birdY+FB_BIRD_H-2;if(by2>=FB_GROUND_Y||by1<=0){fb_saveHi(fb_score);fb_state=FB_DEAD;fb_deadTimer=millis();buzzGameOver();return;}for(int i=0;i<FB_MAX_PIPES;i++)if(bx2>fb_pipes[i].x&&bx1<fb_pipes[i].x+FB_PIPE_W)if(by1<fb_pipes[i].topH||by2>fb_pipes[i].topH+FB_PIPE_GAP){fb_saveHi(fb_score);fb_state=FB_DEAD;fb_deadTimer=millis();buzzGameOver();return;}}
+void fb_drawFast(){for(int i=0;i<FB_MAX_PIPES;i++){if(fb_pipes[i].x!=fb_pipes[i].prevX){fb_erasePipe(fb_pipes[i].prevX);fb_drawPipe(fb_pipes[i].x,fb_pipes[i].topH);}}fb_drawBird(FB_BIRD_X,(int)fb_birdY);if(fb_score!=fb_prevScore){fb_hud(fb_score);fb_prevScore=fb_score;}}
+void runFlappy(){
+  fb_loadHi();
+  tft.fillScreen(0x5DFF);
+  tft.fillRoundRect(20,70,200,50,6,FB_PIPE_DARK);tft.fillRoundRect(22,72,196,46,5,ST77XX_YELLOW);
+  tft.setTextColor(ST77XX_BLACK);tft.setTextSize(3);tft.setCursor(30,78);tft.print("FLAPPY BIRD");
+  tft.setTextColor(ST77XX_WHITE);tft.setTextSize(1);tft.setCursor(30,140);tft.print("ANY BTN=START   MODE=menu");
+  tft.setTextColor(ST77XX_YELLOW);tft.setCursor(70,160);tft.print("BEST: ");tft.print(fb_hi[0]);
+  waitAllReleased();
+  while(true){
+    if(digitalRead(BTN_MODE)==LOW){waitAllReleased();currentState=STATE_MENU;return;}
+    if(digitalRead(BTN_UP)==LOW||digitalRead(BTN_DOWN)==LOW||digitalRead(BTN_LEFT)==LOW||digitalRead(BTN_RIGHT)==LOW)break;
+    delay(10);
+  }
+  waitAllReleased();
+  // Start game
+  fb_score=0;fb_prevScore=0xFFFF;fb_birdY=100;fb_birdVel=0;fb_birdFrame=0;
+  for(int i=0;i<FB_MAX_PIPES;i++){fb_pipes[i].x=fb_pipes[i].prevX=240+30+i*(240/FB_MAX_PIPES+FB_PIPE_W);fb_pipes[i].topH=random(30,FB_GROUND_Y-FB_PIPE_GAP-30);fb_pipes[i].scored=false;}
+  fb_state=FB_PLAYING;fb_lastFrame=fb_animTimer=millis();
+  fb_bg();fb_hud(fb_score);
+  bool lastBtn=false;
+  while(fb_state==FB_PLAYING){
+    if(digitalRead(BTN_MODE)==LOW){waitAllReleased();currentState=STATE_MENU;return;}
+    uint32_t now=millis();
+    if(now-fb_lastFrame>=FB_FRAME_MS){
+      fb_lastFrame=now;
+      bool btn=(digitalRead(BTN_UP)==LOW||digitalRead(BTN_DOWN)==LOW||digitalRead(BTN_LEFT)==LOW||digitalRead(BTN_RIGHT)==LOW);
+      if(btn&&!lastBtn){fb_birdVel=FB_JUMP_VEL;fb_birdFrame=1;buzz(880,20);}
+      lastBtn=btn;fb_update();if(fb_state==FB_PLAYING)fb_drawFast();
     }
+    delay(2);
   }
-  return out;
-}
-
-// Base64 encode (for Basic Auth header)
-String base64Encode(const String& s) {
-  const char* b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  String out = "";
-  int len = s.length();
-  for (int i = 0; i < len; i += 3) {
-    uint8_t a = (uint8_t)s[i];
-    uint8_t b = (i+1 < len) ? (uint8_t)s[i+1] : 0;
-    uint8_t c = (i+2 < len) ? (uint8_t)s[i+2] : 0;
-    out += b64[a >> 2];
-    out += b64[((a & 3) << 4) | (b >> 4)];
-    out += (i+1 < len) ? b64[((b & 0xF) << 2) | (c >> 6)] : '=';
-    out += (i+2 < len) ? b64[c & 0x3F]                     : '=';
+  // Death screen
+  tft.fillRoundRect(20,75,200,95,8,ST77XX_BLACK);tft.fillRoundRect(23,78,194,89,6,ST77XX_WHITE);
+  tft.setTextColor(ST77XX_RED);tft.setTextSize(2);tft.setCursor(34,86);tft.print("GAME  OVER");
+  tft.setTextColor(ST77XX_BLACK);tft.setTextSize(2);tft.setCursor(38,114);tft.print("SCORE:");tft.print(fb_score);
+  tft.setTextSize(1);tft.setTextColor(0x8410);tft.setCursor(38,138);tft.print("BEST: ");tft.print(fb_hi[0]);
+  tft.setTextColor(0x8410);tft.setTextSize(1);tft.setCursor(22,158);tft.print("ANY BTN=play again  MODE=menu");
+  delay(1400);waitAllReleased();
+  while(true){
+    if(digitalRead(BTN_MODE)==LOW){waitAllReleased();currentState=STATE_MENU;return;}
+    if(anyBtnPressed()){waitAllReleased();runFlappy();return;}
+    delay(10);
   }
-  return out;
 }
 
-// Show a status banner at the bottom of the screen
-void smsStatusBanner(const String& msg, uint16_t color) {
-  tft.fillRect(0, 218, 240, 22, color);
-  tft.setTextColor(ST77XX_WHITE); tft.setTextSize(1);
-  tft.setCursor(4, 225);
-  String m = msg;
-  if (m.length() > 38) m = m.substring(0,38);
-  tft.print(m);
+// ======================================================
+//  G A M E  5  —  S N A K E
+// ======================================================
+#define SN_COLS   20
+#define SN_ROWS   18
+#define SN_CELL   11
+#define SN_OX     10
+#define SN_OY     26
+#define SN_MAXLEN 200
+
+int8_t sn_bx[SN_MAXLEN], sn_by[SN_MAXLEN];
+int sn_head, sn_len, sn_score;
+int8_t sn_dx, sn_dy;
+int8_t sn_fx, sn_fy;
+bool sn_alive;
+unsigned long sn_lastMove;
+int sn_speed;
+
+void sn_placeFood(){
+  // Find an empty cell
+  for(int tries=0;tries<200;tries++){
+    int8_t fx=random(SN_COLS), fy=random(SN_ROWS);
+    bool ok=true;
+    for(int i=0;i<sn_len;i++){int idx=(sn_head-i+SN_MAXLEN)%SN_MAXLEN;if(sn_bx[idx]==fx&&sn_by[idx]==fy){ok=false;break;}}
+    if(ok){sn_fx=fx;sn_fy=fy;return;}
+  }
 }
 
-// Send an SMS via Twilio REST API
-// Returns: "" on success, error string on failure
-String twilioSend(const String& toNum, const String& body) {
-  if (WiFi.status() != WL_CONNECTED)  return "No WiFi";
-  if (!twSID[0] || !twToken[0] || !twFrom[0]) return "No credentials";
+void sn_drawCell(int8_t x,int8_t y,uint16_t col){
+  tft.fillRect(SN_OX+x*SN_CELL,SN_OY+y*SN_CELL,SN_CELL-1,SN_CELL-1,col);
+}
 
-  HTTPClient http;
-  String url = "https://api.twilio.com/2010-04-01/Accounts/";
-  url += twSID;
-  url += "/Messages.json";
+void sn_drawHUD(){
+  tft.fillRect(0,0,240,24,COL_BG);
+  tft.setTextColor(ST77XX_GREEN);tft.setTextSize(2);tft.setCursor(4,4);tft.print("SNAKE");
+  tft.setTextColor(ST77XX_WHITE);tft.setTextSize(1);tft.setCursor(120,4);tft.print("Score:");tft.print(sn_score);
+  tft.setTextColor(COL_DIM);tft.setCursor(120,14);tft.print("MODE=menu");
+}
 
-  String authStr = String(twSID) + ":" + String(twToken);
-  String auth = "Basic " + base64Encode(authStr);
+void runSnake(){
+  applyTheme();
+  sn_len=4;sn_head=0;sn_score=0;sn_alive=true;sn_speed=250;
+  sn_dx=1;sn_dy=0;
+  for(int i=0;i<sn_len;i++){sn_bx[i]=sn_len-1-i;sn_by[i]=SN_ROWS/2;}
+  sn_placeFood();sn_lastMove=millis();
+  tft.fillScreen(COL_BG);
+  // Draw border
+  tft.drawRect(SN_OX-1,SN_OY-1,SN_COLS*SN_CELL+2,SN_ROWS*SN_CELL+2,COL_DIM);
+  sn_drawHUD();
+  // Draw initial snake
+  for(int i=0;i<sn_len;i++){int idx=(sn_head-i+SN_MAXLEN)%SN_MAXLEN;sn_drawCell(sn_bx[idx],sn_by[idx],i==0?ST77XX_GREEN:0x03E0);}
+  sn_drawCell(sn_fx,sn_fy,ST77XX_RED);
 
-  String postBody = "To=" + urlEncode(toNum)
-                  + "&From=" + urlEncode(String(twFrom))
-                  + "&Body=" + urlEncode(body);
+  int8_t ndx=sn_dx, ndy=sn_dy;
 
-  http.setTimeout(15000);
-  http.begin(url);
-  http.addHeader("Authorization", auth);
-  http.addHeader("Content-Type",  "application/x-www-form-urlencoded");
-  int code = http.POST(postBody);
+  while(sn_alive){
+    // Input (don't allow 180° reverse)
+    if(btnPressed(BTN_LEFT) &&sn_dx!=1) {ndx=-1;ndy=0;}
+    if(btnPressed(BTN_RIGHT)&&sn_dx!=-1){ndx=1; ndy=0;}
+    if(btnPressed(BTN_UP)   &&sn_dy!=1) {ndx=0; ndy=-1;}
+    if(btnPressed(BTN_DOWN) &&sn_dy!=-1){ndx=0; ndy=1;}
+    if(btnPressed(BTN_MODE)){currentState=STATE_MENU;return;}
 
-  String result = "";
-  if (code == 201) {
-    result = "";  // success
+    if(millis()-sn_lastMove>=sn_speed){
+      sn_lastMove=millis();
+      sn_dx=ndx;sn_dy=ndy;
+
+      int8_t nx=(int8_t)((sn_bx[sn_head]+sn_dx+SN_COLS)%SN_COLS);
+      int8_t ny=(int8_t)((sn_by[sn_head]+sn_dy+SN_ROWS)%SN_ROWS);
+
+      // Self-collision
+      for(int i=0;i<sn_len-1;i++){int idx=(sn_head-i+SN_MAXLEN)%SN_MAXLEN;if(sn_bx[idx]==nx&&sn_by[idx]==ny){sn_alive=false;break;}}
+      if(!sn_alive)break;
+
+      // Erase tail
+      int tail=(sn_head-sn_len+1+SN_MAXLEN)%SN_MAXLEN;
+      bool ateFood=(nx==sn_fx&&ny==sn_fy);
+      if(!ateFood){sn_drawCell(sn_bx[tail],sn_by[tail],COL_BG);} else {sn_score++;if(sn_len<SN_MAXLEN-1)sn_len++;sn_speed=max(80,sn_speed-4);sn_placeFood();sn_drawCell(sn_fx,sn_fy,ST77XX_RED);buzzPoints();}
+
+      // Draw old head as body
+      sn_drawCell(sn_bx[sn_head],sn_by[sn_head],0x03E0);
+
+      // Advance head
+      sn_head=(sn_head+1)%SN_MAXLEN;
+      sn_bx[sn_head]=nx;sn_by[sn_head]=ny;
+      sn_drawCell(nx,ny,ST77XX_GREEN);
+      sn_drawHUD();
+    }
+    delay(10);
+  }
+  buzzGameOver();
+  tft.fillRoundRect(40,90,160,60,8,ST77XX_BLACK);tft.drawRoundRect(40,90,160,60,8,ST77XX_RED);
+  tft.setTextColor(ST77XX_RED);tft.setTextSize(2);tft.setCursor(52,100);tft.print("GAME OVER");
+  tft.setTextColor(ST77XX_WHITE);tft.setTextSize(1);tft.setCursor(54,122);tft.print("Score: ");tft.print(sn_score);
+  tft.setCursor(44,136);tft.print("ANY BTN=retry  MODE=menu");
+  waitAllReleased();
+  while(true){
+    if(btnPressed(BTN_MODE)){currentState=STATE_MENU;return;}
+    if(anyBtnPressed()){runSnake();return;}
+    delay(10);
+  }
+}
+
+// ======================================================
+//  G A M E  6  —  B R E A K O U T
+// ======================================================
+#define BK_ROWS 5
+#define BK_COLS 8
+#define BK_BW   28
+#define BK_BH   10
+#define BK_GAP  2
+#define BK_OX   2
+#define BK_OY   20
+#define BK_PAD_W  36
+#define BK_PAD_H   6
+#define BK_PAD_Y  220
+#define BK_BALL_R   4
+
+uint8_t bk_bricks[BK_ROWS][BK_COLS];
+float bk_bx,bk_by,bk_vx,bk_vy;
+int bk_padX,bk_lastPadX;
+int bk_score,bk_lives;
+bool bk_alive;
+unsigned long bk_lastFrame;
+
+const uint16_t bk_rowColors[BK_ROWS]={ST77XX_RED,ST77XX_ORANGE,ST77XX_YELLOW,ST77XX_GREEN,ST77XX_CYAN};
+
+void bk_drawBrick(int r,int c,bool erase){
+  int x=BK_OX+c*(BK_BW+BK_GAP),y=BK_OY+r*(BK_BH+BK_GAP);
+  if(erase){tft.fillRect(x,y,BK_BW,BK_BH,COL_BG);return;}
+  tft.fillRect(x,y,BK_BW,BK_BH,bk_rowColors[r]);
+  tft.drawRect(x,y,BK_BW,BK_BH,ST77XX_WHITE);
+}
+void bk_drawHUD(){
+  tft.fillRect(0,0,240,18,COL_BG);
+  tft.setTextColor(COL_FG);tft.setTextSize(1);
+  tft.setCursor(4,5);tft.print("Score:");tft.print(bk_score);
+  tft.setCursor(150,5);tft.print("Lives:");tft.print(bk_lives);
+}
+void bk_init(){
+  memset(bk_bricks,1,sizeof(bk_bricks));
+  bk_padX=(SCREEN_WIDTH-BK_PAD_W)/2;bk_lastPadX=bk_padX;
+  bk_bx=SCREEN_WIDTH/2;bk_by=BK_PAD_Y-BK_BALL_R-4;
+  bk_vx=2.2f;bk_vy=-2.8f;
+  bk_score=0;bk_lives=3;bk_alive=true;
+}
+
+void runBreakout(){
+  applyTheme();bk_init();
+  tft.fillScreen(COL_BG);bk_drawHUD();
+  // Draw all bricks
+  for(int r=0;r<BK_ROWS;r++) for(int c=0;c<BK_COLS;c++) bk_drawBrick(r,c,false);
+  // Draw paddle and ball
+  tft.fillRoundRect(bk_padX,BK_PAD_Y,BK_PAD_W,BK_PAD_H,3,ST77XX_CYAN);
+  tft.fillCircle((int)bk_bx,(int)bk_by,BK_BALL_R,ST77XX_WHITE);
+  tft.drawRect(0,18,240,210,COL_DIM); // border
+  bk_lastFrame=millis();
+
+  while(bk_alive){
+    if(digitalRead(BTN_MODE)==LOW){waitAllReleased();currentState=STATE_MENU;return;}
+    if(millis()-bk_lastFrame<16){delay(2);continue;}
+    bk_lastFrame=millis();
+
+    // Input
+    int speed=4;
+    if(digitalRead(BTN_LEFT)==LOW&&bk_padX>0)bk_padX-=speed;
+    if(digitalRead(BTN_RIGHT)==LOW&&bk_padX<SCREEN_WIDTH-BK_PAD_W)bk_padX+=speed;
+
+    // Erase old
+    tft.fillRect(bk_lastPadX,BK_PAD_Y,BK_PAD_W,BK_PAD_H,COL_BG);
+    tft.fillCircle((int)bk_bx,(int)bk_by,BK_BALL_R,COL_BG);
+
+    bk_bx+=bk_vx;bk_by+=bk_vy;
+
+    // Wall bounces
+    if(bk_bx<=BK_BALL_R){bk_bx=BK_BALL_R;bk_vx=-bk_vx;}
+    if(bk_bx>=SCREEN_WIDTH-BK_BALL_R){bk_bx=SCREEN_WIDTH-BK_BALL_R;bk_vx=-bk_vx;}
+    if(bk_by<=19+BK_BALL_R){bk_by=19+BK_BALL_R;bk_vy=-bk_vy;}
+
+    // Paddle bounce
+    if(bk_by>=BK_PAD_Y-BK_BALL_R&&bk_vy>0&&(int)bk_bx>=bk_padX&&(int)bk_bx<=bk_padX+BK_PAD_W){
+      bk_vy=-bk_vy;
+      float rel=((float)((int)bk_bx-(bk_padX+BK_PAD_W/2)))/(BK_PAD_W/2);
+      bk_vx=rel*3.5f;buzzClick();
+    }
+
+    // Brick collision
+    int bix=(int)(bk_bx-BK_OX)/(BK_BW+BK_GAP);
+    int biy=(int)(bk_by-BK_OY)/(BK_BH+BK_GAP);
+    if(biy>=0&&biy<BK_ROWS&&bix>=0&&bix<BK_COLS&&bk_bricks[biy][bix]){
+      bk_bricks[biy][bix]=0;bk_drawBrick(biy,bix,true);
+      bk_score+=10*(BK_ROWS-biy);bk_vy=-bk_vy;bk_drawHUD();buzzPoints();
+      // Check win
+      bool anyLeft=false;
+      for(int r=0;r<BK_ROWS;r++)for(int c=0;c<BK_COLS;c++)if(bk_bricks[r][c])anyLeft=true;
+      if(!anyLeft){buzzWin();delay(800);bk_init();tft.fillScreen(COL_BG);bk_drawHUD();for(int r=0;r<BK_ROWS;r++)for(int c=0;c<BK_COLS;c++)bk_drawBrick(r,c,false);tft.drawRect(0,18,240,210,COL_DIM);}
+    }
+
+    // Ball out of bottom
+    if(bk_by>SCREEN_HEIGHT){
+      bk_lives--;buzzFail();bk_drawHUD();
+      if(bk_lives<=0){bk_alive=false;break;}
+      bk_bx=SCREEN_WIDTH/2;bk_by=BK_PAD_Y-BK_BALL_R-4;bk_vx=2.2f;bk_vy=-2.8f;
+      tft.fillCircle((int)bk_bx,(int)bk_by,BK_BALL_R,ST77XX_WHITE);
+    }
+
+    // Redraw
+    tft.fillRoundRect(bk_padX,BK_PAD_Y,BK_PAD_W,BK_PAD_H,3,ST77XX_CYAN);
+    tft.fillCircle((int)bk_bx,(int)bk_by,BK_BALL_R,ST77XX_WHITE);
+    bk_lastPadX=bk_padX;
+  }
+
+  buzzGameOver();
+  tft.fillRoundRect(40,90,160,60,8,ST77XX_BLACK);tft.drawRoundRect(40,90,160,60,8,ST77XX_RED);
+  tft.setTextColor(ST77XX_RED);tft.setTextSize(2);tft.setCursor(52,100);tft.print("GAME OVER");
+  tft.setTextColor(ST77XX_WHITE);tft.setTextSize(1);tft.setCursor(52,122);tft.print("Score: ");tft.print(bk_score);
+  tft.setCursor(42,136);tft.print("ANY BTN=retry  MODE=menu");
+  waitAllReleased();
+  while(true){
+    if(btnPressed(BTN_MODE)){currentState=STATE_MENU;return;}
+    if(anyBtnPressed()){runBreakout();return;}
+    delay(10);
+  }
+}
+
+// ======================================================
+//  G A M E  7  —  M I N E S W E E P E R
+// ======================================================
+#define MS_COLS 9
+#define MS_ROWS 9
+#define MS_MINES 10
+#define MS_CELL  24
+#define MS_OX    ((240-MS_COLS*MS_CELL)/2)
+#define MS_OY    30
+
+uint8_t ms_board[MS_ROWS][MS_COLS]; // 0=empty, 1-8=count, 9=mine
+bool ms_revealed[MS_ROWS][MS_COLS];
+bool ms_flagged[MS_ROWS][MS_COLS];
+int ms_curX,ms_curY,ms_score;
+bool ms_dead,ms_won;
+
+void ms_drawCell(int cx,int cy){
+  int px=MS_OX+cx*MS_CELL,py=MS_OY+cy*MS_CELL;
+  bool cur=(cx==ms_curX&&cy==ms_curY);
+  if(ms_revealed[cy][cx]){
+    tft.fillRect(px,py,MS_CELL-1,MS_CELL-1,cur?0x2945:0x2104);
+    if(ms_board[cy][cx]==9){tft.fillCircle(px+MS_CELL/2,py+MS_CELL/2,7,ST77XX_RED);}
+    else if(ms_board[cy][cx]>0){
+      uint16_t nc[]={ST77XX_BLUE,ST77XX_GREEN,ST77XX_RED,0x001F,0x8000,ST77XX_CYAN,ST77XX_BLACK,0x8410};
+      tft.setTextColor(nc[ms_board[cy][cx]-1]);tft.setTextSize(2);
+      tft.setCursor(px+7,py+5);tft.print(ms_board[cy][cx]);
+    }
   } else {
-    String resp = http.getString();
-    // Extract "message" from JSON: "message":"....."
-    int mi = resp.indexOf("\"message\":\"");
-    if (mi >= 0) {
-      mi += 11;
-      int me = resp.indexOf("\"", mi);
-      result = (me > mi) ? resp.substring(mi, me) : "Error " + String(code);
-    } else {
-      result = "HTTP " + String(code);
-    }
+    tft.fillRect(px,py,MS_CELL-1,MS_CELL-1,cur?ST77XX_BLUE:COL_CARD);
+    tft.drawRect(px,py,MS_CELL-1,MS_CELL-1,cur?ST77XX_WHITE:COL_DIM);
+    if(ms_flagged[cy][cx]){tft.setTextColor(ST77XX_RED);tft.setTextSize(2);tft.setCursor(px+7,py+5);tft.print("F");}
   }
-  http.end();
-  return result;
 }
 
-// Fetch last N messages received on the Twilio number
-// Returns count (0 on failure)
-int twilioFetchInbox(SmsMsg* msgs, int maxCount) {
-  if (WiFi.status() != WL_CONNECTED)  return 0;
-  if (!twSID[0] || !twToken[0] || !twFrom[0]) return 0;
+void ms_drawAll(){
+  tft.fillScreen(COL_BG);
+  tft.setTextColor(COL_FG);tft.setTextSize(1);
+  tft.setCursor(4,4);tft.print("MINESWEEPER  U/D/L/R=move  R=reveal  D=flag");
+  tft.setCursor(4,14);tft.print("Mines:");tft.print(MS_MINES);tft.print("  Score:");tft.print(ms_score);tft.print("  MODE=menu");
+  for(int r=0;r<MS_ROWS;r++) for(int c=0;c<MS_COLS;c++) ms_drawCell(c,r);
+}
 
-  HTTPClient http;
-  String url = "https://api.twilio.com/2010-04-01/Accounts/";
-  url += twSID;
-  url += "/Messages.json?To=";
-  url += urlEncode(String(twFrom));
-  url += "&PageSize=";
-  url += String(maxCount);
+void ms_reveal(int cx,int cy){
+  if(cx<0||cx>=MS_COLS||cy<0||cy>=MS_ROWS)return;
+  if(ms_revealed[cy][cx]||ms_flagged[cy][cx])return;
+  ms_revealed[cy][cx]=true;
+  if(ms_board[cy][cx]==9){ms_dead=true;return;}
+  if(ms_board[cy][cx]==0){
+    ms_score++;
+    for(int dy=-1;dy<=1;dy++) for(int dx=-1;dx<=1;dx++) if(dx||dy) ms_reveal(cx+dx,cy+dy);
+  } else {ms_score+=ms_board[cy][cx];}
+}
 
-  String authStr = String(twSID) + ":" + String(twToken);
-  String auth = "Basic " + base64Encode(authStr);
+void ms_init(){
+  memset(ms_board,0,sizeof(ms_board));
+  memset(ms_revealed,0,sizeof(ms_revealed));
+  memset(ms_flagged,0,sizeof(ms_flagged));
+  ms_curX=MS_COLS/2;ms_curY=MS_ROWS/2;ms_score=0;ms_dead=false;ms_won=false;
+  // Place mines
+  int placed=0;
+  while(placed<MS_MINES){int x=random(MS_COLS),y=random(MS_ROWS);if(ms_board[y][x]!=9){ms_board[y][x]=9;placed++;}}
+  // Count neighbours
+  for(int r=0;r<MS_ROWS;r++) for(int c=0;c<MS_COLS;c++){
+    if(ms_board[r][c]==9)continue;
+    int cnt=0;
+    for(int dy=-1;dy<=1;dy++) for(int dx=-1;dx<=1;dx++){int nc=c+dx,nr=r+dy;if(nc>=0&&nc<MS_COLS&&nr>=0&&nr<MS_ROWS&&ms_board[nr][nc]==9)cnt++;}
+    ms_board[r][c]=cnt;
+  }
+}
 
-  http.setTimeout(15000);
-  http.begin(url);
-  http.addHeader("Authorization", auth);
-  int code = http.GET();
-  if (code != 200) { http.end(); return 0; }
+void runMinesweeper(){
+  applyTheme();ms_init();ms_drawAll();
+  while(true){
+    bool moved=false;
+    if(btnPressed(BTN_LEFT)) {ms_curX=(ms_curX+MS_COLS-1)%MS_COLS;moved=true;}
+    if(btnPressed(BTN_RIGHT)){ms_curX=(ms_curX+1)%MS_COLS;         moved=true;}
+    if(btnPressed(BTN_UP))   {ms_curY=(ms_curY+MS_ROWS-1)%MS_ROWS; moved=true;}
+    if(btnPressed(BTN_DOWN)) {ms_curY=(ms_curY+1)%MS_ROWS;         moved=true;}
+    if(moved){ms_drawCell((ms_curX+1)%MS_COLS,ms_curY);ms_drawCell((ms_curX-1+MS_COLS)%MS_COLS,ms_curY);ms_drawCell(ms_curX,ms_curY);tft.setTextColor(COL_FG);tft.setTextSize(1);tft.setCursor(4,14);tft.fillRect(0,14,240,10,COL_BG);tft.print("Mines:");tft.print(MS_MINES);tft.print("  Score:");tft.print(ms_score);}
 
-  String json = http.getString();
-  http.end();
-
-  // Simple extraction — find each "from": "..." and "body": "..." block
-  int count = 0;
-  int pos = 0;
-  while (count < maxCount) {
-    int fi = json.indexOf("\"from\":", pos);
-    if (fi < 0) break;
-    fi += 7;
-    // skip whitespace/quotes
-    while (fi < (int)json.length() && (json[fi]==' '||json[fi]=='"')) fi++;
-    int fe = json.indexOf("\"", fi);
-    if (fe < 0) break;
-    String from = json.substring(fi, fe);
-
-    int bi = json.indexOf("\"body\":", fe);
-    if (bi < 0) break;
-    bi += 7;
-    while (bi < (int)json.length() && (json[bi]==' '||json[bi]=='"')) bi++;
-    int be = bi;
-    // Walk to closing quote, skipping escaped chars
-    while (be < (int)json.length()) {
-      if (json[be] == '\\') { be += 2; continue; }
-      if (json[be] == '"')  break;
-      be++;
+    // Right = reveal, Down = flag (when on selected cell)
+    if(digitalRead(BTN_RIGHT)==LOW&&digitalRead(BTN_DOWN)==LOW){
+      // both = flag
+      delay(200);waitAllReleased();
+      if(!ms_revealed[ms_curY][ms_curX])ms_flagged[ms_curY][ms_curX]=!ms_flagged[ms_curY][ms_curX];
+      ms_drawCell(ms_curX,ms_curY);
+    } else if(btnPressed(BTN_MODE)){
+      // MODE = reveal
+      if(!ms_flagged[ms_curY][ms_curX]){ms_reveal(ms_curX,ms_curY);ms_drawAll();}
     }
-    String body = json.substring(bi, be);
 
-    int di = json.indexOf("\"date_sent\":", fe);
-    String date = "";
-    if (di >= 0) {
-      di += 12;
-      while (di < (int)json.length() && (json[di]==' '||json[di]=='"')) di++;
-      int de = json.indexOf("\"", di);
-      if (de > di) {
-        date = json.substring(di, de);
-        // Trim to "HH:MM" — Twilio format: "Thu, 12 Jun 2025 14:23:10 +0000"
-        // Find first ':'
-        int ci = date.indexOf(':');
-        if (ci >= 2) date = date.substring(ci-2, ci+3); // HH:MM
+    if(ms_dead){buzzGameOver();
+      // Reveal all mines
+      for(int r=0;r<MS_ROWS;r++)for(int c=0;c<MS_COLS;c++)if(ms_board[r][c]==9)ms_revealed[r][c]=true;
+      ms_drawAll();
+      tft.fillRoundRect(30,100,180,40,6,ST77XX_BLACK);tft.drawRoundRect(30,100,180,40,6,ST77XX_RED);
+      tft.setTextColor(ST77XX_RED);tft.setTextSize(2);tft.setCursor(48,110);tft.print("GAME OVER");
+      waitAllReleased();while(true){if(anyBtnPressed()){waitAllReleased();runMinesweeper();return;}delay(10);}
+    }
+    // Check win
+    bool allSafe=true;
+    for(int r=0;r<MS_ROWS;r++)for(int c=0;c<MS_COLS;c++)if(ms_board[r][c]!=9&&!ms_revealed[r][c])allSafe=false;
+    if(allSafe){buzzWin();
+      tft.fillRoundRect(30,100,180,40,6,0x0410);tft.drawRoundRect(30,100,180,40,6,ST77XX_GREEN);
+      tft.setTextColor(ST77XX_GREEN);tft.setTextSize(2);tft.setCursor(68,110);tft.print("YOU WIN!");
+      waitAllReleased();while(true){if(anyBtnPressed()){waitAllReleased();runMinesweeper();return;}delay(10);}
+    }
+
+    delay(10);
+  }
+}
+
+// ======================================================
+//  G A M E  8  —  S I M O N  S A Y S
+// ======================================================
+#define SI_COLORS 4
+uint16_t si_cols[SI_COLORS]={ST77XX_RED,ST77XX_GREEN,ST77XX_BLUE,ST77XX_YELLOW};
+const char* si_names[SI_COLORS]={"RED","GREEN","BLUE","YELLOW"};
+int si_btnPins[SI_COLORS]={BTN_LEFT,BTN_UP,BTN_RIGHT,BTN_DOWN};
+uint8_t si_seq[128];
+int si_level;
+
+void si_drawPad(bool lit[4]){
+  tft.fillScreen(COL_BG);
+  tft.setTextColor(COL_FG);tft.setTextSize(1);tft.setCursor(60,4);tft.print("SIMON SAYS");
+  tft.setTextColor(COL_ACCENT);tft.setCursor(4,16);tft.print("Level:");tft.print(si_level);tft.print("  L=Red  U=Green  R=Blue  D=Yellow");
+  int xs[4]={4,122,122,4},ys[4]={30,30,125,125},ws[4]={116,116,116,116},hs[4]={93,93,93,93};
+  for(int i=0;i<4;i++){
+    uint16_t c=lit[i]?si_cols[i]:(uint16_t)(si_cols[i]>>1&0x7BEF);
+    tft.fillRoundRect(xs[i],ys[i],ws[i],hs[i],12,c);
+    if(!lit[i])tft.drawRoundRect(xs[i],ys[i],ws[i],hs[i],12,COL_DIM);
+    tft.setTextColor(lit[i]?ST77XX_WHITE:COL_DIM);tft.setTextSize(1);
+    int tx=xs[i]+(ws[i]-(int)strlen(si_names[i])*6)/2,ty=ys[i]+hs[i]/2-4;
+    tft.setCursor(tx,ty);tft.print(si_names[i]);
+  }
+  tft.setTextColor(COL_DIM);tft.setTextSize(1);tft.setCursor(4,222);tft.print("MODE=menu");
+}
+
+void si_flash(int color,int dur=400){
+  bool lit[4]={false,false,false,false};
+  lit[color]=true;si_drawPad(lit);buzzSimon(color);delay(dur);
+  memset(lit,0,sizeof(lit));si_drawPad(lit);delay(100);
+}
+
+void runSimon(){
+  applyTheme();si_level=0;
+  bool lit[4]={false,false,false,false};
+
+  while(true){
+    // Add one step to sequence
+    si_seq[si_level]=random(SI_COLORS);si_level++;
+    // Play sequence
+    delay(400);
+    for(int i=0;i<si_level;i++){
+      if(digitalRead(BTN_MODE)==LOW){waitAllReleased();currentState=STATE_MENU;return;}
+      si_flash(si_seq[i],max(200,500-si_level*20));
+    }
+    // Player input
+    for(int step=0;step<si_level;step++){
+      unsigned long t0=millis();bool got=false;
+      while(millis()-t0<5000){
+        if(digitalRead(BTN_MODE)==LOW){waitAllReleased();currentState=STATE_MENU;return;}
+        for(int c=0;c<4;c++){
+          if(digitalRead(si_btnPins[c])==LOW){
+            bool lt[4]={false,false,false,false};lt[c]=true;si_drawPad(lt);buzzSimon(c);
+            delay(250);memset(lt,0,sizeof(lt));si_drawPad(lt);waitAllReleased();
+            if(c!=si_seq[step]){
+              // Wrong!
+              buzzGameOver();
+              tft.fillRoundRect(30,95,180,50,8,ST77XX_BLACK);tft.drawRoundRect(30,95,180,50,8,ST77XX_RED);
+              tft.setTextColor(ST77XX_RED);tft.setTextSize(2);tft.setCursor(52,105);tft.print("WRONG!");
+              tft.setTextColor(ST77XX_WHITE);tft.setTextSize(1);tft.setCursor(48,126);tft.print("Level reached: ");tft.print(si_level-1);
+              delay(2000);waitAllReleased();
+              while(true){if(anyBtnPressed()){waitAllReleased();runSimon();return;}if(digitalRead(BTN_MODE)==LOW){waitAllReleased();currentState=STATE_MENU;return;}delay(10);}
+            }
+            got=true;break;
+          }
+        }
+        if(got)break;
+        delay(10);
       }
+      if(!got){buzzFail();currentState=STATE_MENU;return;}
     }
+    buzzOK();delay(300);
+  }
+}
 
-    // Shorten from to last 7 digits
-    if (from.length() > 12) from = "..." + from.substring(from.length()-7);
-    // Trim body
-    if (body.length() > 30) body = body.substring(0,29) + "~";
-
-    msgs[count].from = from;
-    msgs[count].body = body;
-    msgs[count].date = date;
-    count++;
-    pos = be + 1;
+// ======================================================
+//  S M S  (Twilio)
+// ======================================================
+String urlEncode(const String& s){
+  String out=""; for(int i=0;i<(int)s.length();i++){char c=s[i];if(isAlphaNumeric(c)||c=='-'||c=='_'||c=='.'||c=='~')out+=c;else{char buf[4];sprintf(buf,"%%%02X",(uint8_t)c);out+=buf;}}return out;
+}
+String base64Encode(const String& s){
+  const char* b64="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  String out="";int len=s.length();
+  for(int i=0;i<len;i+=3){uint8_t a=(uint8_t)s[i],b=(i+1<len)?(uint8_t)s[i+1]:0,c=(i+2<len)?(uint8_t)s[i+2]:0;out+=b64[a>>2];out+=b64[((a&3)<<4)|(b>>4)];out+=(i+1<len)?b64[((b&0xF)<<2)|(c>>6)]:'=';out+=(i+2<len)?b64[c&0x3F]:'=';}
+  return out;
+}
+void smsStatusBanner(const String& msg,uint16_t color){tft.fillRect(0,218,240,22,color);tft.setTextColor(ST77XX_WHITE);tft.setTextSize(1);tft.setCursor(4,225);String m=msg;if(m.length()>38)m=m.substring(0,38);tft.print(m);}
+String twilioSend(const String& toNum,const String& body){
+  if(WiFi.status()!=WL_CONNECTED)return "No WiFi";
+  if(!twSID[0]||!twToken[0]||!twFrom[0])return "No credentials";
+  WiFiClientSecure client;client.setInsecure();
+  HTTPClient http;
+  String url="https://api.twilio.com/2010-04-01/Accounts/";url+=twSID;url+="/Messages.json";
+  String authStr=String(twSID)+":"+String(twToken);
+  String auth="Basic "+base64Encode(authStr);
+  String postBody="To="+urlEncode(toNum)+"&From="+urlEncode(String(twFrom))+"&Body="+urlEncode(body);
+  http.setTimeout(15000);http.begin(client,url);
+  http.addHeader("Authorization",auth);http.addHeader("Content-Type","application/x-www-form-urlencoded");
+  int code=http.POST(postBody);String result="";
+  if(code!=201){String resp=http.getString();int mi=resp.indexOf("\"message\":\"");if(mi>=0){mi+=11;int me=resp.indexOf("\"",mi);result=(me>mi)?resp.substring(mi,me):"Error "+String(code);}else result="HTTP "+String(code);}
+  http.end();return result;
+}
+int twilioFetchInbox(SmsMsg* msgs,int maxCount){
+  if(WiFi.status()!=WL_CONNECTED||!twSID[0]||!twToken[0]||!twFrom[0])return 0;
+  WiFiClientSecure client;client.setInsecure();
+  HTTPClient http;
+  String url="https://api.twilio.com/2010-04-01/Accounts/";url+=twSID;url+="/Messages.json?To=";url+=urlEncode(String(twFrom));url+="&PageSize=";url+=String(maxCount);
+  String auth="Basic "+base64Encode(String(twSID)+":"+String(twToken));
+  http.setTimeout(15000);http.begin(client,url);http.addHeader("Authorization",auth);
+  int code=http.GET();if(code!=200){http.end();return 0;}
+  String json=http.getString();http.end();
+  int count=0,pos=0;
+  while(count<maxCount){
+    int fi=json.indexOf("\"from\":",pos);if(fi<0)break;fi+=7;while(fi<(int)json.length()&&(json[fi]==' '||json[fi]=='"'))fi++;int fe=json.indexOf("\"",fi);if(fe<0)break;String from=json.substring(fi,fe);
+    int bi=json.indexOf("\"body\":",fe);if(bi<0)break;bi+=7;while(bi<(int)json.length()&&(json[bi]==' '||json[bi]=='"'))bi++;int be=bi;while(be<(int)json.length()){if(json[be]=='\\'){be+=2;continue;}if(json[be]=='"')break;be++;}String body=json.substring(bi,be);
+    if(from.length()>12)from="..."+from.substring(from.length()-7);if(body.length()>30)body=body.substring(0,29)+"~";
+    msgs[count].from=from;msgs[count].body=body;msgs[count].date="";count++;pos=be+1;
   }
   return count;
 }
-
-// Main SMS screen
-void runSMS() {
+void runSMS(){
   applyTheme();
-
-  // No credentials guard
-  if (!twSID[0] || !twToken[0] || !twFrom[0]) {
-    tft.fillScreen(COL_BG);
-    tft.setTextColor(ST77XX_MAGENTA); tft.setTextSize(2);
-    tft.setCursor(50, 30); tft.print("SMS");
-    tft.setTextColor(ST77XX_RED); tft.setTextSize(1);
-    tft.setCursor(10, 68); tft.print("Twilio credentials not set.");
-    tft.setTextColor(COL_FG); tft.setCursor(10, 86);
-    tft.print("Go to Settings > SMS tab to");
-    tft.setCursor(10, 102); tft.print("enter your Account SID,");
-    tft.setCursor(10, 118); tft.print("Auth Token, and From number.");
-    tft.setTextColor(COL_ACCENT); tft.setCursor(10, 148);
-    tft.print("Sign up free at twilio.com");
-    tft.setCursor(10, 164); tft.print("(trial lets you send to verified");
-    tft.setCursor(10, 180); tft.print("numbers at no charge)");
-    tft.setTextColor(COL_DIM); tft.setCursor(10, 210);
-    tft.print("MODE = back to menu");
-    while (true) {
-      if (btnPressed(BTN_MODE) || btnPressed(BTN_LEFT)) { currentState = STATE_MENU; return; }
-      delay(10);
-    }
+  if(!twSID[0]||!twToken[0]||!twFrom[0]){
+    tft.fillScreen(COL_BG);tft.setTextColor(ST77XX_MAGENTA);tft.setTextSize(2);tft.setCursor(50,30);tft.print("SMS");
+    tft.setTextColor(ST77XX_RED);tft.setTextSize(1);tft.setCursor(10,68);tft.print("Twilio credentials not set.");
+    tft.setTextColor(COL_FG);tft.setCursor(10,86);tft.print("Go to Settings > SMS tab");
+    tft.setTextColor(COL_DIM);tft.setCursor(10,210);tft.print("MODE=back");
+    while(true){if(btnPressed(BTN_MODE)||btnPressed(BTN_LEFT)){currentState=STATE_MENU;return;}delay(10);}
   }
-
-  // No WiFi guard
-  if (WiFi.status() != WL_CONNECTED) {
-    tft.fillScreen(COL_BG);
-    tft.setTextColor(ST77XX_MAGENTA); tft.setTextSize(2);
-    tft.setCursor(50, 30); tft.print("SMS");
-    tft.setTextColor(ST77XX_RED); tft.setTextSize(1);
-    tft.setCursor(10, 68); tft.print("Not connected to WiFi.");
-    tft.setTextColor(COL_ACCENT); tft.setCursor(10, 88);
-    tft.print("Go to Settings > WiFi to connect.");
-    tft.setTextColor(COL_DIM); tft.setCursor(10, 118);
-    tft.print("MODE = back to menu");
-    while (true) {
-      if (btnPressed(BTN_MODE) || btnPressed(BTN_LEFT)) { currentState = STATE_MENU; return; }
-      delay(10);
-    }
+  if(WiFi.status()!=WL_CONNECTED){
+    tft.fillScreen(COL_BG);tft.setTextColor(ST77XX_MAGENTA);tft.setTextSize(2);tft.setCursor(50,30);tft.print("SMS");
+    tft.setTextColor(ST77XX_RED);tft.setTextSize(1);tft.setCursor(10,68);tft.print("Not connected to WiFi.");
+    tft.setTextColor(COL_DIM);tft.setCursor(10,118);tft.print("MODE=back");
+    while(true){if(btnPressed(BTN_MODE)||btnPressed(BTN_LEFT)){currentState=STATE_MENU;return;}delay(10);}
   }
-
-  // SMS home: two options — Send | Inbox
-  int opt = 0; // 0=Send  1=Inbox
-
-  auto drawSmsHome = [&]() {
-    tft.fillScreen(COL_BG);
-    tft.setTextColor(ST77XX_MAGENTA); tft.setTextSize(2);
-    tft.setCursor(68, 10); tft.print("SMS");
-    tft.setTextColor(COL_ACCENT); tft.setTextSize(1);
-    tft.setCursor(10, 36); tft.print("From: "); tft.print(twFrom);
-
-    // Send card
-    tft.fillRoundRect(14, 60, 212, 52, 8, opt==0 ? ST77XX_MAGENTA : COL_CARD);
-    tft.drawRoundRect(14, 60, 212, 52, 8, opt==0 ? ST77XX_WHITE   : COL_DIM);
-    tft.setTextSize(2); tft.setTextColor(opt==0 ? ST77XX_WHITE : COL_FG);
-    tft.setCursor(74, 70); tft.print("Send");
-    tft.setTextSize(1); tft.setTextColor(opt==0 ? ST77XX_WHITE : COL_ACCENT);
-    tft.setCursor(28, 94); tft.print("Compose & send a new message");
-
-    // Inbox card
-    tft.fillRoundRect(14, 122, 212, 52, 8, opt==1 ? ST77XX_BLUE : COL_CARD);
-    tft.drawRoundRect(14, 122, 212, 52, 8, opt==1 ? ST77XX_WHITE : COL_DIM);
-    tft.setTextSize(2); tft.setTextColor(opt==1 ? ST77XX_WHITE : COL_FG);
-    tft.setCursor(66, 132); tft.print("Inbox");
-    tft.setTextSize(1); tft.setTextColor(opt==1 ? ST77XX_WHITE : COL_ACCENT);
-    tft.setCursor(28, 156); tft.print("View last 10 received messages");
-
-    tft.setTextColor(COL_DIM); tft.setTextSize(1);
-    tft.setCursor(10, 190); tft.print("UP/DOWN = select   RIGHT = open");
-    tft.setCursor(10, 204); tft.print("MODE = back to menu");
+  int opt=0;
+  auto drawSmsHome=[&](){
+    tft.fillScreen(COL_BG);tft.setTextColor(ST77XX_MAGENTA);tft.setTextSize(2);tft.setCursor(68,10);tft.print("SMS");
+    tft.setTextColor(COL_ACCENT);tft.setTextSize(1);tft.setCursor(10,36);tft.print("From: ");tft.print(twFrom);
+    tft.fillRoundRect(14,60,212,52,8,opt==0?ST77XX_MAGENTA:COL_CARD);tft.drawRoundRect(14,60,212,52,8,opt==0?ST77XX_WHITE:COL_DIM);
+    tft.setTextSize(2);tft.setTextColor(opt==0?ST77XX_WHITE:COL_FG);tft.setCursor(74,70);tft.print("Send");
+    tft.fillRoundRect(14,122,212,52,8,opt==1?ST77XX_BLUE:COL_CARD);tft.drawRoundRect(14,122,212,52,8,opt==1?ST77XX_WHITE:COL_DIM);
+    tft.setTextSize(2);tft.setTextColor(opt==1?ST77XX_WHITE:COL_FG);tft.setCursor(66,132);tft.print("Inbox");
+    tft.setTextColor(COL_DIM);tft.setTextSize(1);tft.setCursor(10,190);tft.print("UP/DOWN=select  RIGHT=open  MODE=back");
   };
-
   drawSmsHome();
-
-  while (true) {
-    if (btnPressed(BTN_UP))   { opt = 0; drawSmsHome(); }
-    if (btnPressed(BTN_DOWN)) { opt = 1; drawSmsHome(); }
-    if (btnPressed(BTN_MODE)) { currentState = STATE_MENU; return; }
-
-    if (btnPressed(BTN_RIGHT)) {
-      if (opt == 0) {
-        // ---- SEND SMS ----
-        String toNum = textEntry("To (e.g. +12025551234):", twLastTo);
-        toNum.trim();
-        if (toNum.length() < 7) { drawSmsHome(); continue; }
-
-        String msgBody = textEntry("Message:", "");
-        msgBody.trim();
-        if (msgBody.length() == 0) { drawSmsHome(); continue; }
-
-        // Save last-used To number
-        toNum.toCharArray(twLastTo, 18);
-        ee_writeMagic(); ee_writeStr(EE_TW_TO_ADDR, twLastTo, 18);
-
-        // Show sending screen
-        tft.fillScreen(COL_BG);
-        tft.setTextColor(ST77XX_MAGENTA); tft.setTextSize(2);
-        tft.setCursor(44, 10); tft.print("Sending...");
-        tft.setTextColor(COL_ACCENT); tft.setTextSize(1);
-        tft.setCursor(10, 40); tft.print("To: ");   tft.print(toNum);
-        tft.setCursor(10, 56); tft.print("Msg: ");
-        // Word-wrap message up to 3 lines
-        String b = msgBody;
-        for (int line = 0; line < 3 && b.length() > 0; line++) {
-          String chunk = b.substring(0, min((int)b.length(), 30));
-          b = (b.length() > 30) ? b.substring(30) : "";
-          tft.setCursor(10, 72 + line*14); tft.print(chunk);
-        }
-
-        String err = twilioSend(toNum, msgBody);
-        if (err.length() == 0) {
-          smsStatusBanner("Sent!", ST77XX_GREEN);
-        } else {
-          smsStatusBanner("Error: " + err, ST77XX_RED);
-        }
-        delay(2500);
-        drawSmsHome();
-
+  while(true){
+    if(btnPressed(BTN_UP)){opt=0;drawSmsHome();}
+    if(btnPressed(BTN_DOWN)){opt=1;drawSmsHome();}
+    if(btnPressed(BTN_MODE)){currentState=STATE_MENU;return;}
+    if(btnPressed(BTN_RIGHT)){
+      if(opt==0){
+        String toNum=textEntry("To (e.g. +12025551234):",twLastTo);toNum.trim();if(toNum.length()<7){drawSmsHome();continue;}
+        String msgBody=textEntry("Message:","");msgBody.trim();if(msgBody.length()==0){drawSmsHome();continue;}
+        toNum.toCharArray(twLastTo,18);ee_writeMagic();ee_writeStr(EE_TW_TO_ADDR,twLastTo,18);
+        tft.fillScreen(COL_BG);tft.setTextColor(ST77XX_MAGENTA);tft.setTextSize(2);tft.setCursor(44,10);tft.print("Sending...");
+        tft.setTextColor(COL_ACCENT);tft.setTextSize(1);tft.setCursor(10,40);tft.print("To: ");tft.print(toNum);
+        String err=twilioSend(toNum,msgBody);
+        if(err.length()==0){smsStatusBanner("Sent!",ST77XX_GREEN);buzzOK();}else{smsStatusBanner("Error: "+err,ST77XX_RED);buzzFail();}
+        delay(2500);drawSmsHome();
       } else {
-        // ---- INBOX ----
-        tft.fillScreen(COL_BG);
-        tft.setTextColor(ST77XX_BLUE); tft.setTextSize(2);
-        tft.setCursor(48, 10); tft.print("Inbox");
-        tft.setTextColor(COL_ACCENT); tft.setTextSize(1);
-        tft.setCursor(10, 34); tft.print("Fetching messages...");
-
-        const int MAX_MSGS = 10;
-        SmsMsg msgs[MAX_MSGS];
-        int count = twilioFetchInbox(msgs, MAX_MSGS);
-
-        tft.fillRect(0, 30, 240, 14, COL_BG);
-
-        if (count == 0) {
-          tft.setTextColor(ST77XX_RED); tft.setCursor(10, 50);
-          tft.print("No messages or fetch failed.");
-          tft.setTextColor(COL_ACCENT); tft.setCursor(10, 70);
-          tft.print("Check credentials in Settings.");
-          tft.setTextColor(COL_DIM); tft.setCursor(10, 200);
-          tft.print("MODE or LEFT = back");
-          while (true) {
-            if (btnPressed(BTN_MODE) || btnPressed(BTN_LEFT)) { drawSmsHome(); break; }
-            delay(10);
-          }
-        } else {
-          int sel = 0;
-          const int ROWS = 5;
-
-          auto drawInbox = [&]() {
-            tft.fillScreen(COL_BG);
-            tft.setTextColor(ST77XX_BLUE); tft.setTextSize(1);
-            tft.setCursor(4, 4);
-            tft.print("Inbox ("); tft.print(count); tft.print(" msgs) U/D=scroll MODE=back");
-            tft.drawFastHLine(0, 14, 240, COL_DIM);
-
-            int startIdx = sel - 2;
-            if (startIdx < 0) startIdx = 0;
-            if (startIdx > count - ROWS) startIdx = max(0, count - ROWS);
-
-            for (int i = 0; i < ROWS && (startIdx+i) < count; i++) {
-              int idx = startIdx + i;
-              bool isSel = (idx == sel);
-              int ry = 18 + i*43;
-              tft.fillRoundRect(2, ry, 236, 40, 3, isSel ? 0x0018 : COL_CARD);
-              tft.drawRoundRect(2, ry, 236, 40, 3, isSel ? ST77XX_BLUE : COL_DIM);
-
-              // From + time
-              tft.setTextColor(isSel ? ST77XX_CYAN : COL_ACCENT);
-              tft.setCursor(6, ry+4); tft.print(msgs[idx].from);
-              tft.setTextColor(COL_DIM);
-              tft.setCursor(180, ry+4); tft.print(msgs[idx].date);
-
-              // Body
-              tft.setTextColor(isSel ? ST77XX_WHITE : COL_FG);
-              tft.setCursor(6, ry+20); tft.print(msgs[idx].body);
-            }
-            tft.setTextColor(COL_DIM); tft.setTextSize(1);
-            tft.setCursor(4, 234); tft.print(String(sel+1)+"/"+String(count)+"  MODE=back");
-          };
-
+        tft.fillScreen(COL_BG);tft.setTextColor(ST77XX_BLUE);tft.setTextSize(2);tft.setCursor(48,10);tft.print("Inbox");
+        tft.setTextColor(COL_ACCENT);tft.setTextSize(1);tft.setCursor(10,34);tft.print("Fetching messages...");
+        const int MAX_MSGS=10;SmsMsg msgs[MAX_MSGS];int count=twilioFetchInbox(msgs,MAX_MSGS);
+        tft.fillRect(0,30,240,14,COL_BG);
+        if(count==0){tft.setTextColor(ST77XX_RED);tft.setCursor(10,50);tft.print("No messages or fetch failed.");tft.setTextColor(COL_DIM);tft.setCursor(10,200);tft.print("MODE or LEFT=back");while(true){if(btnPressed(BTN_MODE)||btnPressed(BTN_LEFT)){drawSmsHome();break;}delay(10);}}
+        else{
+          int sel=0;const int ROWS=5;
+          auto drawInbox=[&](){tft.fillScreen(COL_BG);tft.setTextColor(ST77XX_BLUE);tft.setTextSize(1);tft.setCursor(4,4);tft.print("Inbox (");tft.print(count);tft.print(") U/D=scroll MODE=back");tft.drawFastHLine(0,14,240,COL_DIM);int startIdx=sel-2;if(startIdx<0)startIdx=0;if(startIdx>count-ROWS)startIdx=max(0,count-ROWS);for(int i=0;i<ROWS&&(startIdx+i)<count;i++){int idx=startIdx+i;bool isSel=(idx==sel);int ry=18+i*43;tft.fillRoundRect(2,ry,236,40,3,isSel?0x0018:COL_CARD);tft.drawRoundRect(2,ry,236,40,3,isSel?ST77XX_BLUE:COL_DIM);tft.setTextColor(isSel?ST77XX_CYAN:COL_ACCENT);tft.setCursor(6,ry+4);tft.print(msgs[idx].from);tft.setTextColor(isSel?ST77XX_WHITE:COL_FG);tft.setCursor(6,ry+20);tft.print(msgs[idx].body);}};
           drawInbox();
-          while (true) {
-            if (btnPressed(BTN_UP))   { if (sel > 0)       { sel--; drawInbox(); } }
-            if (btnPressed(BTN_DOWN)) { if (sel < count-1) { sel++; drawInbox(); } }
-            if (btnPressed(BTN_MODE) || btnPressed(BTN_LEFT)) { drawSmsHome(); break; }
-            delay(10);
-          }
+          while(true){if(btnPressed(BTN_UP)){if(sel>0){sel--;drawInbox();}}if(btnPressed(BTN_DOWN)){if(sel<count-1){sel++;drawInbox();}}if(btnPressed(BTN_MODE)||btnPressed(BTN_LEFT)){drawSmsHome();break;}delay(10);}
         }
       }
     }
+    delay(10);
+  }
+}
 
+// ======================================================
+//  S T O P W A T C H
+// ======================================================
+void sw_fmt(unsigned long ms,char* buf){
+  unsigned long totalSec=ms/1000,centis=(ms%1000)/10,secs=totalSec%60,mins=(totalSec/60)%60,hrs=totalSec/3600;
+  if(hrs>0)sprintf(buf,"%lu:%02lu:%02lu.%02lu",hrs,mins,secs,centis);
+  else sprintf(buf,"%02lu:%02lu.%02lu",mins,secs,centis);
+}
+void runStopwatch(){
+  applyTheme();bool running=false;unsigned long startMs=0,elapsed=0;
+  unsigned long laps[8];int lapCnt=0;unsigned long lastDraw=0;
+  bool pUp=false,pDown=false,pRight=false;
+  auto fullDraw=[&](){
+    tft.fillScreen(COL_BG);tft.setTextColor(COL_FG);tft.setTextSize(2);tft.setCursor(46,4);tft.print("STOPWATCH");
+    tft.drawFastHLine(0,22,240,COL_DIM);tft.setTextColor(COL_DIM);tft.setTextSize(1);
+    tft.setCursor(4,26);tft.print("UP=go  DOWN=lap  RIGHT=reset  MODE=back");
+    tft.drawFastHLine(0,36,240,COL_DIM);
+    tft.fillRoundRect(82,40,76,14,4,running?ST77XX_GREEN:COL_CARD);tft.setTextColor(running?ST77XX_BLACK:COL_DIM);tft.setTextSize(1);
+    tft.setCursor(running?91:96,44);tft.print(running?"RUNNING":"PAUSED");
+    unsigned long tot=elapsed+(running?(millis()-startMs):0UL);char buf[14];sw_fmt(tot,buf);
+    tft.setTextColor(running?ST77XX_GREEN:COL_FG);tft.setTextSize(3);tft.setCursor((240-(int)strlen(buf)*18)/2,56);tft.print(buf);
+    tft.drawFastHLine(0,86,240,COL_DIM);tft.setTextColor(COL_ACCENT);tft.setTextSize(1);tft.setCursor(4,90);tft.print("LAPS:");
+    if(lapCnt==0){tft.setTextColor(COL_DIM);tft.setCursor(4,104);tft.print("Press DOWN to record a lap");return;}
+    int from=(lapCnt>6)?lapCnt-6:0;
+    for(int i=from;i<lapCnt;i++){int ry=100+(i-from)*22;bool last=(i==lapCnt-1);tft.fillRoundRect(4,ry,232,19,3,last?0x0018:COL_CARD);tft.setTextColor(last?ST77XX_CYAN:COL_FG);tft.setTextSize(1);char lb[14];sw_fmt(laps[i],lb);tft.setCursor(10,ry+6);tft.print(i+1);tft.print("  ");tft.print(lb);}
+  };
+  auto fastTime=[&](){unsigned long tot=elapsed+(running?(millis()-startMs):0UL);char buf[14];sw_fmt(tot,buf);tft.fillRect(0,52,240,34,COL_BG);tft.setTextColor(running?ST77XX_GREEN:COL_FG);tft.setTextSize(3);tft.setCursor((240-(int)strlen(buf)*18)/2,56);tft.print(buf);};
+  fullDraw();
+  while(true){
+    bool up=(digitalRead(BTN_UP)==LOW),dn=(digitalRead(BTN_DOWN)==LOW),rt=(digitalRead(BTN_RIGHT)==LOW);
+    bool upE=up&&!pUp,dnE=dn&&!pDown,rtE=rt&&!pRight;pUp=up;pDown=dn;pRight=rt;
+    if(upE){if(running){elapsed+=millis()-startMs;running=false;}else{startMs=millis();running=true;}fullDraw();}
+    if(dnE&&lapCnt<8){laps[lapCnt++]=elapsed+(running?(millis()-startMs):0UL);buzzClick();fullDraw();}
+    if(rtE){running=false;elapsed=0;lapCnt=0;fullDraw();}
+    if(btnPressed(BTN_MODE)||btnPressed(BTN_LEFT)){currentState=STATE_MENU;return;}
+    if(running&&millis()-lastDraw>=50){fastTime();lastDraw=millis();}
+    delay(10);
+  }
+}
+
+// ======================================================
+//  C A L C U L A T O R
+// ======================================================
+void runCalc(){
+  applyTheme();
+  double val=0,stored=0;
+  char op=0;
+  bool newInput=true;
+  String display="0";
+  String history="";
+
+  // Keypad layout (4x4)
+  const char* keys[4][4]={{"7","8","9","/"},{"4","5","6","*"},{"1","2","3","-"},{"0",".","=","+"}};
+  const uint16_t keyCols[4]={COL_CARD,COL_CARD,COL_CARD,0x0018};
+  const uint16_t opCol=0x2104;
+  int curR=3,curC=0;
+
+  auto drawCalc=[&](){
+    tft.fillScreen(COL_BG);
+    tft.setTextColor(COL_ACCENT);tft.setTextSize(1);tft.setCursor(4,4);tft.print("CALCULATOR  MODE=menu  D-pad=nav  R=select");
+    // History line
+    tft.fillRect(0,16,240,12,COL_CARD);
+    tft.setTextColor(COL_DIM);tft.setTextSize(1);
+    String h=history;if(h.length()>36)h="..."+h.substring(h.length()-33);
+    tft.setCursor(4,19);tft.print(h);
+    // Display
+    tft.fillRoundRect(2,30,236,28,4,darkTheme?0x18C3:0xDEDB);
+    tft.setTextColor(COL_FG);tft.setTextSize(3);
+    String d=display;if(d.length()>9)d=d.substring(d.length()-9);
+    tft.setCursor(240-(int)d.length()*18-6,35);tft.print(d);
+    // Keys
+    for(int r=0;r<4;r++){for(int c=0;c<4;c++){
+      int kx=4+c*59,ky=64+r*43;bool sel=(r==curR&&c==curC);
+      bool isOp=(c==3||(r==3&&c==2));
+      tft.fillRoundRect(kx,ky,55,39,6,sel?ST77XX_BLUE:(isOp?opCol:keyCols[r]));
+      if(sel)tft.drawRoundRect(kx,ky,55,39,6,ST77XX_WHITE);
+      tft.setTextColor(sel?ST77XX_WHITE:(isOp?ST77XX_CYAN:COL_FG));tft.setTextSize(2);
+      tft.setCursor(kx+(55-(int)strlen(keys[r][c])*12)/2,ky+13);tft.print(keys[r][c]);
+    }}
+    // DEL key
+    tft.fillRoundRect(4,240-14,55,11,3,0x8000);tft.setTextColor(ST77XX_WHITE);tft.setTextSize(1);tft.setCursor(14,241);tft.print("DEL");
+    // +/- key
+    tft.fillRoundRect(64,240-14,55,11,3,0x2104);tft.setTextColor(ST77XX_WHITE);tft.setCursor(76,241);tft.print("+/-");
+    // C key
+    tft.fillRoundRect(124,240-14,55,11,3,0x8000);tft.setTextColor(ST77XX_WHITE);tft.setCursor(136,241);tft.print("CLR");
+  };
+  drawCalc();
+
+  while(true){
+    if(btnPressed(BTN_UP))   {curR=(curR+3)%4;drawCalc();}
+    if(btnPressed(BTN_DOWN)) {curR=(curR+1)%4;drawCalc();}
+    if(btnPressed(BTN_LEFT)) {curC=(curC+3)%4;drawCalc();}
+
+    // RIGHT = select key
+    if(btnPressed(BTN_RIGHT)){
+      const char* k=keys[curR][curC];buzzClick();
+      if(k[0]>='0'&&k[0]<='9'){
+        if(newInput){display="";newInput=false;}
+        if(display=="0")display="";
+        display+=k;
+      } else if(k[0]=='.'){
+        if(display.indexOf('.')<0){if(newInput){display="0";newInput=false;}display+='.';}
+      } else if(k[0]=='='){
+        if(op&&!newInput){
+          double cur=display.toDouble();
+          double res=stored;
+          if(op=='+')res=stored+cur;
+          else if(op=='-')res=stored-cur;
+          else if(op=='*')res=stored*cur;
+          else if(op=='/'&&cur!=0)res=stored/cur;
+          history=String(stored,4)+String(op)+String(cur,4)+"="+String(res,4);
+          // Format result
+          if(res==(int)res&&abs(res)<1e9)display=String((long)res);
+          else display=String(res,4);
+          val=res;op=0;newInput=true;buzzPoints();
+        }
+      } else {
+        // Operator
+        if(!newInput){stored=display.toDouble();}
+        op=k[0];newInput=true;
+      }
+      drawCalc();
+    }
+    // DOWN = next row (already handled) + special bottom row via MODE hold
+    if(digitalRead(BTN_MODE)==LOW){
+      unsigned long t0=millis();
+      while(digitalRead(BTN_MODE)==LOW){
+        if(millis()-t0>1000){waitAllReleased();currentState=STATE_MENU;return;}
+        delay(10);
+      }
+      // Short press = DEL
+      if(display.length()>1)display.remove(display.length()-1);else display="0";
+      buzzClick();drawCalc();
+    }
+    delay(10);
+  }
+}
+
+// ======================================================
+//  S T O C K   T I C K E R
+//  Uses Yahoo Finance API (HTTPS, no key required)
+// ======================================================
+
+
+StockData fetchStock(const String& sym) {
+  StockData s; s.valid=false; s.closeCount=0;
+  if(WiFi.status()!=WL_CONNECTED)return s;
+  WiFiClientSecure client; client.setInsecure();
+  HTTPClient http;
+  String url="https://query1.finance.yahoo.com/v8/finance/chart/"+sym+"?interval=1d&range=5d";
+  http.setTimeout(12000);
+  http.begin(client,url);
+  http.addHeader("User-Agent","Mozilla/5.0");
+  http.addHeader("Accept","application/json");
+  int code=http.GET();
+  if(code==200){
+    String body=http.getString();
+    // Parse regularMarketPrice
+    int pi=body.indexOf("\"regularMarketPrice\":");
+    if(pi>=0){pi+=21;int pe=body.indexOf(",",pi);if(pe>pi)s.price=body.substring(pi,pe);}
+    // Parse previousClose
+    int pci=body.indexOf("\"previousClose\":");
+    float prevClose=0;
+    if(pci>=0){pci+=16;int pce=body.indexOf(",",pci);if(pce>pci)prevClose=body.substring(pci,pce).toFloat();}
+    // Parse currency
+    int ci=body.indexOf("\"currency\":\"");
+    if(ci>=0){ci+=12;int ce=body.indexOf("\"",ci);if(ce>ci)s.currency=body.substring(ci,ce);}
+    // Parse shortName
+    int ni=body.indexOf("\"shortName\":\"");
+    if(ni>=0){ni+=13;int ne=body.indexOf("\"",ni);if(ne>ni)s.name=body.substring(ni,min(ne,(int)(ni+20)));}
+    // Parse close array
+    int closeIdx=body.indexOf("\"close\":[");
+    if(closeIdx>=0){
+      closeIdx+=9;int closeEnd=body.indexOf("]",closeIdx);
+      String arr=body.substring(closeIdx,closeEnd);
+      int start=0;
+      while(s.closeCount<5){
+        int comma=arr.indexOf(",",start);
+        String tok=(comma>=0)?arr.substring(start,comma):arr.substring(start);
+        tok.trim();if(tok.length()==0)break;
+        s.closes[s.closeCount++]=tok.toFloat();
+        if(comma<0)break;start=comma+1;
+      }
+    }
+    // Compute change
+    float curPrice=s.price.toFloat();
+    if(prevClose>0){float ch=curPrice-prevClose;float pct=ch/prevClose*100;char buf[16];sprintf(buf,"%+.2f",ch);s.change=String(buf);sprintf(buf,"%+.2f%%",pct);s.changePct=String(buf);}
+    s.symbol=sym.substring(0);s.symbol.toUpperCase();
+    s.valid=(s.price.length()>0);
+  }
+  http.end();return s;
+}
+
+void drawStockChart(float* closes,int count,int x,int y,int w,int h,uint16_t col){
+  if(count<2)return;
+  float mn=closes[0],mx=closes[0];
+  for(int i=1;i<count;i++){mn=min(mn,closes[i]);mx=max(mx,closes[i]);}
+  float range=mx-mn; if(range<0.001f)range=1;
+  tft.drawRect(x,y,w,h,COL_DIM);
+  float step=(float)(w-2)/(count-1);
+  int prevPx=-1,prevPy=-1;
+  for(int i=0;i<count;i++){
+    int px=x+1+(int)(i*step);
+    int py=y+h-1-(int)((closes[i]-mn)/range*(h-2));
+    tft.fillCircle(px,py,2,col);
+    if(prevPx>=0){tft.drawLine(prevPx,prevPy,px,py,col);}
+    prevPx=px;prevPy=py;
+  }
+  // Labels
+  tft.setTextColor(COL_DIM);tft.setTextSize(1);
+  tft.setCursor(x,y+h+2);char lb[8];sprintf(lb,"%.1f",mn);tft.print(lb);
+  sprintf(lb,"%.1f",mx);tft.setCursor(x+w-(int)strlen(lb)*6,y-8);tft.print(lb);
+}
+
+void runStocks(){
+  applyTheme();
+  if(WiFi.status()!=WL_CONNECTED){
+    tft.fillScreen(COL_BG);tft.setTextColor(ST77XX_ORANGE);tft.setTextSize(2);tft.setCursor(10,20);tft.print("STOCKS");
+    tft.setTextColor(ST77XX_RED);tft.setTextSize(1);tft.setCursor(10,60);tft.print("No WiFi connection.");tft.setCursor(10,80);tft.print("Go to Settings > WiFi first.");
+    tft.setTextColor(COL_DIM);tft.setCursor(10,120);tft.print("MODE=back");
+    while(true){if(btnPressed(BTN_MODE)){currentState=STATE_MENU;return;}delay(10);}
+  }
+
+  while(true){
+    // Search screen
+    tft.fillScreen(COL_BG);
+    tft.setTextColor(ST77XX_ORANGE);tft.setTextSize(2);tft.setCursor(10,8);tft.print("STOCKS");
+    tft.setTextColor(COL_ACCENT);tft.setTextSize(1);tft.setCursor(10,32);tft.print("Enter ticker symbol (e.g. KO, AAPL, TSLA)");
+    tft.setTextColor(COL_DIM);tft.setCursor(10,44);tft.print("Last: ");tft.print(lastStockSym);
+
+    String sym=textEntry("Ticker symbol:",lastStockSym);
+    sym.trim();sym.toUpperCase();
+    if(sym.length()==0){currentState=STATE_MENU;return;}
+    sym.toCharArray(lastStockSym,12);ee_writeMagic();ee_writeStr(EE_STOCK_ADDR,lastStockSym,12);
+
+    // Fetching screen
+    tft.fillScreen(COL_BG);
+    tft.setTextColor(ST77XX_ORANGE);tft.setTextSize(2);tft.setCursor(10,8);tft.print("STOCKS");
+    tft.setTextColor(ST77XX_CYAN);tft.setTextSize(1);tft.setCursor(10,40);tft.print("Fetching ");tft.print(sym);tft.print("...");
+
+    StockData st=fetchStock(sym);
+
+    tft.fillScreen(COL_BG);
+    if(!st.valid){
+      tft.setTextColor(ST77XX_RED);tft.setTextSize(1);tft.setCursor(10,60);tft.print("Could not fetch: ");tft.print(sym);
+      tft.setCursor(10,80);tft.print("Check ticker symbol and try again.");
+      tft.setTextColor(COL_DIM);tft.setCursor(10,120);tft.print("RIGHT=new search  MODE=back");
+      while(true){if(btnPressed(BTN_RIGHT)){break;}if(btnPressed(BTN_MODE)){currentState=STATE_MENU;return;}delay(10);}
+      continue;
+    }
+
+    // Draw result
+    tft.setTextColor(ST77XX_ORANGE);tft.setTextSize(2);tft.setCursor(4,4);tft.print(st.symbol);
+    if(st.name.length()>0){tft.setTextColor(COL_DIM);tft.setTextSize(1);tft.setCursor(4,22);tft.print(st.name);}
+
+    // Price
+    tft.fillRoundRect(4,34,232,36,6,COL_CARD);
+    tft.setTextColor(COL_FG);tft.setTextSize(3);
+    String dispPrice=st.price.length()>6?st.price.substring(0,7):st.price;
+    tft.setCursor(8,40);tft.print(st.currency.length()>0?st.currency+"  ":"");tft.print(dispPrice);
+
+    // Change badge
+    bool up=(st.change.length()>0&&st.change[0]=='+');
+    bool dn=(st.change.length()>0&&st.change[0]=='-');
+    uint16_t chColor=up?ST77XX_GREEN:dn?ST77XX_RED:COL_FG;
+    tft.fillRoundRect(4,76,232,24,5,up?0x0410:dn?0x8000:COL_CARD);
+    tft.setTextColor(ST77XX_WHITE);tft.setTextSize(1);
+    tft.setCursor(10,84);tft.print("Change: ");tft.print(st.change);tft.print("  (");tft.print(st.changePct);tft.print(")");
+
+    // 5-day chart
+    tft.setTextColor(COL_ACCENT);tft.setTextSize(1);tft.setCursor(4,106);tft.print("5-Day Chart:");
+    if(st.closeCount>=2){
+      drawStockChart(st.closes,st.closeCount,4,118,226,70,up?ST77XX_GREEN:dn?ST77XX_RED:ST77XX_CYAN);
+    } else {
+      tft.setTextColor(COL_DIM);tft.setCursor(4,122);tft.print("Chart data unavailable");
+    }
+
+    // Day labels
+    tft.setTextColor(COL_DIM);tft.setTextSize(1);
+    for(int i=0;i<st.closeCount&&i<5;i++){
+      int px=4+i*((226)/(max(st.closeCount-1,1)));
+      char buf[8];sprintf(buf,"D%d",i+1);tft.setCursor(px,192);tft.print(buf);
+    }
+
+    tft.setTextColor(COL_DIM);tft.setCursor(4,208);tft.print("Powered by Yahoo Finance");
+    tft.setCursor(4,220);tft.print("RIGHT=new search  MODE=back");
+
+    while(true){
+      if(btnPressed(BTN_RIGHT)){break;}
+      if(btnPressed(BTN_MODE)){currentState=STATE_MENU;return;}
+      delay(10);
+    }
+  }
+}
+
+// ======================================================
+//  N E W S   H E A D L I N E S
+//  Source: BBC World News RSS (no API key)
+// ======================================================
+void runNews(){
+  applyTheme();
+  tft.fillScreen(COL_BG);
+  tft.setTextColor(ST77XX_ORANGE);tft.setTextSize(2);tft.setCursor(10,6);tft.print("NEWS");
+  tft.setTextColor(COL_ACCENT);tft.setTextSize(1);tft.setCursor(10,26);tft.print("BBC World Headlines");
+
+  if(WiFi.status()!=WL_CONNECTED){
+    tft.setTextColor(ST77XX_RED);tft.setTextSize(1);tft.setCursor(10,60);tft.print("No WiFi — connect in Settings");
+    tft.setTextColor(COL_DIM);tft.setCursor(10,120);tft.print("MODE=back");
+    while(true){if(btnPressed(BTN_MODE)){currentState=STATE_MENU;return;}delay(10);}
+    return;
+  }
+
+  tft.setTextColor(ST77XX_CYAN);tft.setTextSize(1);tft.setCursor(10,44);tft.print("Fetching headlines...");
+
+  HTTPClient http;
+  http.setTimeout(10000);
+  http.begin("https://feeds.bbci.co.uk/news/world/rss.xml");
+  http.addHeader("User-Agent", "ESP32");
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);  // ← ADD THIS
+  int code = http.GET();
+
+  if(code!=200){
+    tft.fillRect(0,40,240,20,COL_BG);
+    tft.setTextColor(ST77XX_RED);tft.setTextSize(1);tft.setCursor(10,60);tft.print("Fetch failed. Code: ");tft.print(code);
+    tft.setTextColor(COL_DIM);tft.setCursor(10,120);tft.print("MODE=back");
+    http.end();while(true){if(btnPressed(BTN_MODE)){currentState=STATE_MENU;return;}delay(10);}return;
+  }
+
+  String xml=http.getString();http.end();
+
+  // Parse <title> tags, skip first (feed title)
+  const int MAX_HEADLINES=12;
+  String headlines[MAX_HEADLINES];
+  int count=0;int pos=0;bool first=true;
+  while(count<MAX_HEADLINES){
+    int ti=xml.indexOf("<title>",pos);if(ti<0)break;ti+=7;
+    int te=xml.indexOf("</title>",ti);if(te<0)break;
+    String title=xml.substring(ti,te);
+    // Strip CDATA if present
+    if(title.startsWith("<![CDATA[")){title=title.substring(9);title.replace("]]>","");}
+    title.trim();
+    if(!first&&title.length()>0&&!title.startsWith("BBC")){headlines[count++]=title;}
+    first=false;pos=te+8;
+  }
+
+  tft.fillRect(0,40,240,200,COL_BG);
+
+  if(count==0){
+    tft.setTextColor(ST77XX_RED);tft.setTextSize(1);tft.setCursor(10,60);tft.print("No headlines found.");
+    tft.setTextColor(COL_DIM);tft.setCursor(10,80);tft.print("MODE=back");
+    while(true){if(btnPressed(BTN_MODE)){currentState=STATE_MENU;return;}delay(10);}return;
+  }
+
+  // Display: 4 headlines per page, word-wrapped
+  int topIdx=0;
+
+  auto drawPage=[&](){
+    tft.fillRect(0,36,240,204,COL_BG);
+    tft.fillRect(0,36,240,12,COL_BG);
+    tft.setTextColor(COL_DIM);tft.setTextSize(1);
+    tft.setCursor(4,38);tft.print("U/D=scroll  MODE=back  BBC World News");
+    tft.drawFastHLine(0,48,240,COL_DIM);
+    for(int i=0;i<4&&(topIdx+i)<count;i++){
+      int ny=52+i*46;bool sel=(i==0);
+      tft.fillRoundRect(2,ny,236,42,4,sel?COL_CARD:COL_BG);
+      tft.drawRoundRect(2,ny,236,42,4,sel?COL_ACCENT:COL_DIM);
+      tft.setTextColor(sel?COL_FG:COL_DIM);tft.setTextSize(1);
+      // Word-wrap to 36 chars x 2 lines
+      String h=headlines[topIdx+i];
+      tft.setCursor(6,ny+5);tft.print(h.substring(0,min((int)h.length(),36)));
+      if(h.length()>36){tft.setCursor(6,ny+18);tft.print(h.substring(36,min((int)h.length(),72)));}
+      tft.setTextColor(COL_DIM);tft.setCursor(6,ny+32);tft.print(String(topIdx+i+1)+"/"+String(count));
+    }
+  };
+  drawPage();
+  while(true){
+    if(btnPressed(BTN_UP)){if(topIdx>0){topIdx--;drawPage();}}
+    if(btnPressed(BTN_DOWN)){if(topIdx<count-1){topIdx++;drawPage();}}
+    if(btnPressed(BTN_RIGHT)){
+      // Refresh
+      runNews();return;
+    }
+    if(btnPressed(BTN_MODE)){currentState=STATE_MENU;return;}
+    delay(10);
+  }
+}
+
+// ======================================================
+//  N A S A   D A T A   E X P L O R E R
+//  Tabs: Planets | Moons | Artemis II | APOD
+// ======================================================
+struct PlanetData{const char* name,*type,*distAU,*diameter,*dayLen,*yearLen,*moons,*tempC,*gravity,*fact;uint16_t color;};
+static const PlanetData nasaPlanets[]={
+  {"Mercury","Rocky","0.39 AU","4,879 km","58.6d","0.24y","0","-180/430°C","3.7","No atmosphere, enormous craters",0xC618},
+  {"Venus","Rocky","0.72 AU","12,104 km","243d","0.62y","0","464°C","8.87","Hottest planet; spins backward",0xECA0},
+  {"Earth","Rocky","1.00 AU","12,742 km","1d","1.00y","1","15°C","9.81","Only known planet with life",0x051F},
+  {"Mars","Rocky","1.52 AU","6,779 km","1.03d","1.88y","2","-60°C","3.72","Largest volcano: Olympus Mons",0xF800},
+  {"Jupiter","Gas","5.20 AU","139,820 km","0.41d","11.86y","95","-110°C","24.8","Great Red Spot: 350yr storm",0xECA0},
+  {"Saturn","Gas","9.58 AU","116,460 km","0.45d","29.46y","146","-140°C","10.4","Rings made of ice and rock",0xFFE0},
+  {"Uranus","Ice","19.2 AU","50,724 km","0.72d","84.01y","28","-195°C","8.69","Tilted 98° — rolls around Sun",0x07FF},
+  {"Neptune","Ice","30.05 AU","49,244 km","0.67d","164.8y","16","-200°C","11.2","Fastest winds: 2,100 km/h",0x001F},
+};
+static const int NASA_NUM_PLANETS=8;
+
+struct MoonData{const char* name,*planet,*diameter,*distKm,*period,*fact;uint16_t color;};
+static const MoonData nasaMoons[]={
+  {"Moon","Earth","3,474","384,400","27.3d","First body humans walked on (Apollo 11)",0xC618},
+  {"Phobos","Mars","22","9,378","0.32d","Closest moon to its planet; spiraling in",0xA145},
+  {"Deimos","Mars","12","23,459","1.26d","Smallest named moon in the solar system",0x8410},
+  {"Io","Jupiter","3,643","421,700","1.77d","Most volcanically active body in system",0xFFE0},
+  {"Europa","Jupiter","3,122","671,100","3.55d","Subsurface ocean: top alien life target",0xAD55},
+  {"Ganymede","Jupiter","5,268","1,070,400","7.15d","Largest moon; bigger than Mercury",0xC618},
+  {"Callisto","Jupiter","4,821","1,882,700","16.69d","Most heavily cratered object known",0x8410},
+  {"Titan","Saturn","5,150","1,221,870","15.95d","Dense N2 atmo; liquid methane lakes",0xECA0},
+  {"Enceladus","Saturn","504","238,000","1.37d","Ice geysers spray water into space",0xFFFF},
+  {"Mimas","Saturn","396","185,520","0.94d","Herschel crater = looks like Death Star",0xC618},
+  {"Triton","Neptune","2,707","354,759","5.88d","Orbits backward — captured Kuiper Belt",0x07FF},
+  {"Charon","Pluto","1,212","19,591","6.39d","So large they orbit each other mutually",0xC618},
+};
+static const int NASA_NUM_MOONS=12;
+
+struct ArtemisCard{const char* title,*line1,*line2,*line3;uint16_t color;};
+static const ArtemisCard artemisCards[]={
+  {"ARTEMIS II","Launched: April 1, 2026","Splashdown: April 10, 2026","First crewed lunar flyby since 1972",ST77XX_CYAN},
+  {"THE CREW","Cmdr: Reid Wiseman (NASA)","Pilot: Victor Glover (NASA)","MSp: Christina Koch & Jeremy Hansen (CSA)",ST77XX_GREEN},
+  {"THE SPACECRAFT","Orion 'Integrity' + ESA Service Module","SLS Block 1 rocket — LC-39B, KSC","Wingspan: 63 ft (solar arrays deployed)",0x07E0},
+  {"THE JOURNEY","TLI burn: Apr 2, 7:49 PM EDT","Lunar flyby: Apr 6 at 6,545 km altitude","Far side: 40 min communications blackout",ST77XX_YELLOW},
+  {"THE RECORD","Max distance: 252,756 mi from Earth","Beat Apollo 13 record by 3,366 miles","Fastest speed: 39,472 km/h at TLI",0xFD20},
+  {"MISSION GOALS","Validate Orion life-support systems","Test crew operations for deep space","Lay groundwork for Artemis IV landing",ST77XX_MAGENTA},
+  {"ARTEMIS PROGRAM","Artemis I: Nov 2022 (uncrewed test)","Artemis III: 2027 — crewed Moon landing","Artemis IV: 2028 — Gateway assembly",0xF81F},
+  {"JWST & STARDANCE","James Webb: 1.5M km from Earth (L2)","Detects galaxies 13.6B light-years away","Stardance Challenge: real NASA datasets!",ST77XX_CYAN},
+  {"MARS EXPLORATION","Perseverance: Jezero Crater since 2021","Ingenuity: 72+ flights, altitude record","Searching for ancient microbial biosigns",0xF800},
+  {"NEAR-EARTH OBJECTS","DART mission: deflected Dimorphos 2022","Apophis: safe flyby in April 2029","Linear-based sky surveys track 30k+ NEOs",ST77XX_YELLOW},
+  {"HUBBLE VS WEBB","Hubble: optical/UV, 560 km LEO orbit","Webb: infrared, 1.5M km L2 point","Webb mirror: 6.5m vs Hubble 2.4m",0x07FF},
+  {"SPACE STATIONS","ISS: 408 km altitude, ~28,000 km/h","Orbits Earth every ~90 minutes","Gateway: future Lunar orbit station 2027",ST77XX_GREEN},
+};
+static const int ARTEMIS_NUM_CARDS=12;
+
+APODData fetchAPOD(){
+  APODData a;a.valid=false;if(WiFi.status()!=WL_CONNECTED)return a;
+  WiFiClientSecure client;client.setInsecure();
+  HTTPClient http;
+  http.begin(client,"https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY");
+  http.setTimeout(10000);int code=http.GET();
+  if(code==200){
+    String body=http.getString();
+    int ti=body.indexOf("\"title\":\"");if(ti>=0){ti+=9;int te=body.indexOf("\"",ti);if(te>ti)a.title=body.substring(ti,te);}
+    int di=body.indexOf("\"date\":\"");if(di>=0){di+=8;int de=body.indexOf("\"",di);if(de>di)a.date=body.substring(di,de);}
+    int ei=body.indexOf("\"explanation\":\"");
+    if(ei>=0){ei+=15;String ex="";for(int i=ei;i<(int)body.length()&&ex.length()<900;i++){if(body[i]=='"'&&(i==0||body[i-1]!='\\'))break;if(body[i]=='\\'){i++;continue;}ex+=body[i];}a.explanation=ex;}
+    a.valid=(a.title.length()>0);
+  }
+  http.end();return a;
+}
+
+const char* nasaTabs[]={"Planets","Moons","Artemis","APOD"};
+const int NASA_TABS=4;
+int nasaTab=0;
+
+void nasa_drawTabBar(){
+  for(int i=0;i<NASA_TABS;i++){int tx=2+i*60;bool sel=(i==nasaTab);tft.fillRoundRect(tx,2,58,20,3,sel?0x001F:COL_CARD);tft.drawRoundRect(tx,2,58,20,3,sel?ST77XX_CYAN:COL_DIM);tft.setTextColor(sel?ST77XX_WHITE:COL_ACCENT);tft.setTextSize(1);tft.setCursor(tx+(58-(int)strlen(nasaTabs[i])*6)/2,10);tft.print(nasaTabs[i]);}
+  tft.drawFastHLine(0,24,240,COL_DIM);
+}
+
+void nasa_drawPlanet(int idx){
+  const PlanetData& p=nasaPlanets[idx];tft.fillScreen(COL_BG);nasa_drawTabBar();
+  tft.fillRoundRect(4,28,232,22,5,p.color);tft.setTextColor(ST77XX_BLACK);tft.setTextSize(2);int nx=4+(232-(int)strlen(p.name)*12)/2;tft.setCursor(nx,34);tft.print(p.name);
+  tft.fillRoundRect(4,54,70,14,3,COL_CARD);tft.setTextColor(COL_ACCENT);tft.setTextSize(1);tft.setCursor(8,59);tft.print(p.type);tft.print(" Planet");
+  tft.setTextColor(COL_DIM);tft.setCursor(170,59);tft.print(idx+1);tft.print("/");tft.print(NASA_NUM_PLANETS);
+  struct SR{const char* l;const char* v;uint16_t c;};
+  SR rows[]={{"Dist (from Sun)",p.distAU,ST77XX_YELLOW},{"Diameter",p.diameter,ST77XX_CYAN},{"Day length",p.dayLen,ST77XX_GREEN},{"Year length",p.yearLen,0xFD20},{"Moons",p.moons,ST77XX_MAGENTA},{"Avg Temp",p.tempC,ST77XX_RED},{"Gravity m/s²",p.gravity,0x07FF}};
+  for(int i=0;i<7;i++){int cx=(i%2)*120+4,cy=72+(i/2)*30;tft.fillRoundRect(cx,cy,116,26,3,COL_CARD);tft.setTextColor(COL_DIM);tft.setTextSize(1);tft.setCursor(cx+4,cy+4);tft.print(rows[i].l);tft.setTextColor(rows[i].c);tft.setCursor(cx+4,cy+15);tft.print(rows[i].v);}
+  tft.fillRoundRect(4,222,232,14,3,0x1082);tft.setTextColor(ST77XX_YELLOW);tft.setTextSize(1);tft.setCursor(8,226);String f=String(p.fact);if(f.length()>36)f=f.substring(0,36);tft.print(f);
+  tft.setTextColor(COL_DIM);tft.setCursor(4,238);tft.print("L/R=planet  UP/DOWN=tab  MODE=menu");
+}
+
+void nasa_drawMoon(int idx){
+  const MoonData& m=nasaMoons[idx];tft.fillScreen(COL_BG);nasa_drawTabBar();
+  tft.fillRoundRect(4,28,232,22,5,m.color);tft.setTextColor(ST77XX_BLACK);tft.setTextSize(2);int nx=4+(232-(int)strlen(m.name)*12)/2;tft.setCursor(nx,34);tft.print(m.name);
+  tft.fillRoundRect(4,54,110,14,3,COL_CARD);tft.setTextColor(COL_ACCENT);tft.setTextSize(1);tft.setCursor(8,59);tft.print("Moon of ");tft.print(m.planet);
+  tft.setTextColor(COL_DIM);tft.setCursor(170,59);tft.print(idx+1);tft.print("/");tft.print(NASA_NUM_MOONS);
+  struct SR{const char* l;const char* v;uint16_t c;};
+  SR rows[]={{"Diameter (km)",m.diameter,ST77XX_CYAN},{"Dist from planet",m.distKm,ST77XX_GREEN},{"Orbit period",m.period,0xFD20}};
+  for(int i=0;i<3;i++){tft.fillRoundRect(4,72+i*32,232,28,3,COL_CARD);tft.setTextColor(COL_DIM);tft.setTextSize(1);tft.setCursor(8,76+i*32);tft.print(rows[i].l);tft.setTextColor(rows[i].c);tft.setCursor(8,87+i*32);tft.print(rows[i].v);}
+  tft.fillRoundRect(4,172,232,44,4,0x0018);tft.drawRoundRect(4,172,232,44,4,ST77XX_CYAN);
+  tft.setTextColor(ST77XX_CYAN);tft.setTextSize(1);tft.setCursor(8,177);tft.print("FACT:");tft.setTextColor(ST77XX_WHITE);
+  String fact=String(m.fact);tft.setCursor(8,189);tft.print(fact.substring(0,min((int)fact.length(),36)));
+  if(fact.length()>36){tft.setCursor(8,201);tft.print(fact.substring(36,min((int)fact.length(),72)));}
+  tft.setTextColor(COL_DIM);tft.setCursor(4,222);tft.print("L/R=moon  UP/DOWN=tab  MODE=menu");
+}
+
+void nasa_drawArtemis(int idx){
+  const ArtemisCard& c=artemisCards[idx];tft.fillScreen(COL_BG);nasa_drawTabBar();
+  tft.fillRoundRect(4,28,232,24,6,c.color);tft.setTextColor(ST77XX_BLACK);tft.setTextSize(1);int nx=4+(232-(int)strlen(c.title)*6)/2;tft.setCursor(nx,38);tft.print(c.title);
+  tft.setTextColor(ST77XX_WHITE);tft.setCursor(190,30);tft.print(idx+1);tft.print("/");tft.print(ARTEMIS_NUM_CARDS);
+  const char* lines[]={c.line1,c.line2,c.line3};uint16_t lcols[]={ST77XX_WHITE,ST77XX_CYAN,ST77XX_GREEN};
+  for(int i=0;i<3;i++){tft.fillRoundRect(4,60+i*48,232,42,5,COL_CARD);tft.drawRoundRect(4,60+i*48,232,42,5,c.color);tft.setTextColor(lcols[i]);tft.setTextSize(1);String s=String(lines[i]);tft.setCursor(8,68+i*48);tft.print(s.substring(0,min((int)s.length(),36)));if(s.length()>36){tft.setCursor(8,80+i*48);tft.print(s.substring(36,min((int)s.length(),72)));}}
+  tft.fillRoundRect(4,208,232,14,3,0x000F);tft.setTextColor(ST77XX_CYAN);tft.setTextSize(1);tft.setCursor(8,213);tft.print("★ NASA  Stardance Challenge  2026 ★");
+  tft.setTextColor(COL_DIM);tft.setCursor(4,228);tft.print("L/R=card  UP/DOWN=tab  MODE=menu");
+}
+
+void nasa_drawAPOD(){
+  tft.fillScreen(COL_BG);nasa_drawTabBar();
+  tft.setTextColor(ST77XX_YELLOW);tft.setTextSize(1);tft.setCursor(6,30);tft.print("Astronomy Picture of the Day");
+  tft.drawFastHLine(0,40,240,COL_DIM);
+  if(WiFi.status()!=WL_CONNECTED){tft.setTextColor(ST77XX_RED);tft.setCursor(6,52);tft.print("No WiFi — connect in Settings");tft.setTextColor(COL_DIM);tft.setCursor(6,220);tft.print("MODE=menu");return;}
+  tft.setTextColor(ST77XX_CYAN);tft.setCursor(6,52);tft.print("Fetching APOD from NASA...");
+  APODData apod=fetchAPOD();tft.fillScreen(COL_BG);nasa_drawTabBar();
+  if(!apod.valid){tft.setTextColor(ST77XX_RED);tft.setCursor(6,52);tft.print("Fetch failed. Try again later.");tft.setTextColor(COL_DIM);tft.setCursor(6,220);tft.print("RIGHT=retry  MODE=menu");while(true){if(btnPressed(BTN_RIGHT)){nasa_drawAPOD();return;}if(btnPressed(BTN_MODE)){currentState=STATE_MENU;return;}delay(10);}return;}
+  // Classify
+  String classify="Deep Space Object";
+  String t=apod.title;t.toLowerCase();
+  if(t.indexOf("nebula")>=0)classify="Nebula";
+  else if(t.indexOf("galaxy")>=0)classify="Galaxy";
+  else if(t.indexOf("black hole")>=0)classify="Black Hole";
+  else if(t.indexOf("aurora")>=0)classify="Aurora";
+  else if(t.indexOf("comet")>=0)classify="Comet";
+  else if(t.indexOf("supernova")>=0)classify="Supernova";
+  else if(t.indexOf("mars")>=0)classify="Planet: Mars";
+  else if(t.indexOf("saturn")>=0)classify="Planet: Saturn";
+  else if(t.indexOf("moon")>=0||t.indexOf("lunar")>=0)classify="Moon / Lunar";
+  else if(t.indexOf("sun")>=0||t.indexOf("solar")>=0)classify="Sun / Solar";
+  // Wrap explanation
+  const int MAX_LINES=60;String lines[MAX_LINES];int totalLines=0;
+  String ex=apod.explanation;
+  while(ex.length()>0&&totalLines<MAX_LINES){int cut=min((int)ex.length(),36);if(cut<(int)ex.length()&&ex[cut]!=' '){int sp=ex.lastIndexOf(' ',cut);if(sp>0)cut=sp;}lines[totalLines++]=ex.substring(0,cut);ex=(cut<(int)ex.length())?ex.substring(cut+1):"";}
+  const int BODY_Y=82,BODY_H=140,LINE_H=13,LINES_VIS=BODY_H/LINE_H,SCROLL_X=231,SCROLL_H=BODY_H;
+  int scrollPos=0;
+  auto drawHeader=[&](){tft.fillRect(0,24,240,58,COL_BG);tft.setTextColor(ST77XX_GREEN);tft.setTextSize(1);tft.setCursor(4,27);tft.print(apod.date);tft.fillRoundRect(130,24,106,13,3,0x000F);tft.setTextColor(ST77XX_CYAN);tft.setTextSize(1);tft.setCursor(134,27);tft.print(classify);tft.fillRoundRect(2,42,228,36,3,COL_CARD);tft.setTextColor(ST77XX_YELLOW);tft.setTextSize(1);tft.setCursor(5,47);tft.print(apod.title.substring(0,min((int)apod.title.length(),36)));if(apod.title.length()>36){tft.setCursor(5,60);tft.print(apod.title.substring(36,min((int)apod.title.length(),72)));}tft.drawFastHLine(0,80,240,COL_DIM);};
+  auto drawScrollbar=[&](){tft.fillRect(SCROLL_X,BODY_Y,8,SCROLL_H,COL_CARD);tft.drawRect(SCROLL_X,BODY_Y,8,SCROLL_H,COL_DIM);if(totalLines<=LINES_VIS)return;int thumbH=max(8,SCROLL_H*LINES_VIS/totalLines);int thumbY=BODY_Y+(SCROLL_H-thumbH)*scrollPos/max(1,totalLines-LINES_VIS);tft.fillRect(SCROLL_X+1,thumbY,6,thumbH,ST77XX_CYAN);};
+  auto drawBody=[&](){tft.fillRect(0,BODY_Y,SCROLL_X,BODY_H,COL_BG);for(int i=0;i<LINES_VIS;i++){int li=scrollPos+i;if(li>=totalLines)break;tft.setTextColor(COL_FG);tft.setTextSize(1);tft.setCursor(4,BODY_Y+i*LINE_H);tft.print(lines[li]);}drawScrollbar();};
+  nasa_drawTabBar();drawHeader();drawBody();
+  tft.fillRect(0,224,240,16,COL_BG);tft.setTextColor(COL_DIM);tft.setTextSize(1);tft.setCursor(4,228);tft.print("UP/DN=scroll  R=refresh  MODE=menu");
+  while(true){
+    if(btnPressed(BTN_UP)){if(scrollPos>0){scrollPos--;drawBody();}}
+    if(btnPressed(BTN_DOWN)){if(scrollPos<totalLines-LINES_VIS){scrollPos++;drawBody();}}
+    if(btnPressed(BTN_RIGHT)){nasa_drawAPOD();return;}
+    if(btnPressed(BTN_MODE)){currentState=STATE_MENU;return;}
+    delay(10);
+  }
+}
+
+void runNASA(){
+  applyTheme();nasaTab=0;int planetIdx=0,moonIdx=0,artemisIdx=0;
+  nasa_drawPlanet(planetIdx);
+  while(true){
+    if(btnPressed(BTN_UP)){nasaTab=(nasaTab+NASA_TABS-1)%NASA_TABS;switch(nasaTab){case 0:nasa_drawPlanet(planetIdx);break;case 1:nasa_drawMoon(moonIdx);break;case 2:nasa_drawArtemis(artemisIdx);break;case 3:nasa_drawAPOD();break;}}
+    if(btnPressed(BTN_DOWN)){nasaTab=(nasaTab+1)%NASA_TABS;switch(nasaTab){case 0:nasa_drawPlanet(planetIdx);break;case 1:nasa_drawMoon(moonIdx);break;case 2:nasa_drawArtemis(artemisIdx);break;case 3:nasa_drawAPOD();break;}}
+    if(btnPressed(BTN_LEFT)){switch(nasaTab){case 0:planetIdx=(planetIdx+NASA_NUM_PLANETS-1)%NASA_NUM_PLANETS;nasa_drawPlanet(planetIdx);break;case 1:moonIdx=(moonIdx+NASA_NUM_MOONS-1)%NASA_NUM_MOONS;nasa_drawMoon(moonIdx);break;case 2:artemisIdx=(artemisIdx+ARTEMIS_NUM_CARDS-1)%ARTEMIS_NUM_CARDS;nasa_drawArtemis(artemisIdx);break;}}
+    if(btnPressed(BTN_RIGHT)){switch(nasaTab){case 0:planetIdx=(planetIdx+1)%NASA_NUM_PLANETS;nasa_drawPlanet(planetIdx);break;case 1:moonIdx=(moonIdx+1)%NASA_NUM_MOONS;nasa_drawMoon(moonIdx);break;case 2:artemisIdx=(artemisIdx+1)%ARTEMIS_NUM_CARDS;nasa_drawArtemis(artemisIdx);break;case 3:nasa_drawAPOD();break;}}
+    if(btnPressed(BTN_MODE)){currentState=STATE_MENU;return;}
+    delay(10);
+  }
+}
+
+// ======================================================
+//  G A M E S  S U B M E N U  (8 games)
+// ======================================================
+void runGames(){
+  const char* names[]={"2048","Tetris","Pong","Flappy","Snake","Breakout","Minesweep","Simon"};
+  const uint16_t colors[]={0xEAC0,ST77XX_CYAN,ST77XX_GREEN,0xFD20,ST77XX_GREEN,ST77XX_ORANGE,ST77XX_YELLOW,ST77XX_MAGENTA};
+  int sel=0;
+  auto draw=[&](){
+    tft.fillScreen(COL_BG);tft.setTextSize(2);tft.setTextColor(COL_FG);
+    tft.setCursor(52,4);tft.print("GAMES");
+    tft.setTextSize(1);tft.setTextColor(COL_ACCENT);
+    tft.setCursor(14,22);tft.print("UP/DOWN=select  RIGHT=play  MODE=back");
+    tft.drawFastHLine(0,32,240,COL_DIM);
+    for(int i=0;i<8;i++){
+      int cy=38+i*25;bool s=(i==sel);
+      tft.fillRoundRect(8,cy,224,22,4,s?colors[i]:COL_CARD);
+      tft.drawRoundRect(8,cy,224,22,4,s?ST77XX_WHITE:COL_DIM);
+      tft.setTextSize(s?2:1);tft.setTextColor(s?ST77XX_BLACK:COL_FG);
+      tft.setCursor(8+(224-(int)strlen(names[i])*6*(s?2:1))/2,cy+(s?3:7));
+      tft.print(names[i]);
+    }
+  };
+  draw();
+  while(true){
+    if(btnPressed(BTN_UP))  {sel=(sel+7)%8;draw();}
+    if(btnPressed(BTN_DOWN)){sel=(sel+1)%8;draw();}
+    if(btnPressed(BTN_RIGHT)||btnPressed(BTN_LEFT)){
+      switch(sel){
+        case 0:currentState=STATE_2048;      break;
+        case 1:currentState=STATE_TETRIS;    break;
+        case 2:currentState=STATE_PONG;      break;
+        case 3:currentState=STATE_FLAPPY;    break;
+        case 4:currentState=STATE_SNAKE;     break;
+        case 5:currentState=STATE_BREAKOUT;  break;
+        case 6:currentState=STATE_MINESWEEPER;break;
+        case 7:currentState=STATE_SIMON;     break;
+      }
+      return;
+    }
+    if(btnPressed(BTN_MODE)){currentState=STATE_MENU;return;}
     delay(10);
   }
 }
@@ -1720,57 +2116,71 @@ void runSMS() {
 // ======================================================
 //  S E T U P   &   L O O P
 // ======================================================
-void setup() {
+void setup(){
   Serial.begin(115200);
+  pinMode(BTN_LEFT, INPUT_PULLUP); pinMode(BTN_UP,  INPUT_PULLUP);
+  pinMode(BTN_RIGHT,INPUT_PULLUP); pinMode(BTN_DOWN,INPUT_PULLUP);
+  pinMode(BTN_MODE, INPUT_PULLUP);
+#ifdef BUZZER_PIN
+  pinMode(BUZZER_PIN,OUTPUT);
+#endif
 
-  pinMode(BTN_LEFT,  INPUT_PULLUP);
-  pinMode(BTN_UP,    INPUT_PULLUP);
-  pinMode(BTN_RIGHT, INPUT_PULLUP);
-  pinMode(BTN_DOWN,  INPUT_PULLUP);
-  pinMode(BTN_MODE,  INPUT_PULLUP);
-
-  EEPROM.begin(EE_TOTAL);  // Required on ESP32 — must call before any EEPROM access
-
-  tft.init(SCREEN_WIDTH, SCREEN_HEIGHT);
+  EEPROM.begin(EE_TOTAL);
+  tft.init(SCREEN_WIDTH,SCREEN_HEIGHT);
   tft.setRotation(2);
+  ee_loadAll();applyTheme();
+  tft.fillScreen(COL_BG);randomSeed(analogRead(A0));
 
-  // Load all saved settings first
-  ee_loadAll();
-  applyTheme();
-  tft.fillScreen(COL_BG);
+  // Splash screen
+  tft.setTextColor(ST77XX_GREEN);tft.setTextSize(2);tft.setCursor(14,80);tft.print("MINTYBOY");
+  tft.setTextColor(ST77XX_YELLOW);tft.setTextSize(1);tft.setCursor(60,100);tft.print("Extended Edition");
+  tft.setTextColor(COL_DIM);tft.setCursor(20,120);tft.print("8 games  Stocks  News  NASA  AQI");
+#ifdef BUZZER_PIN
+  buzz(880,50);delay(80);buzz(1047,80);
+#endif
 
-  randomSeed(analogRead(A0));
+  if(bleAdvertising)bleStart();
 
-  // Restore BLE advertising if it was on last session
-  if (bleAdvertising) bleStart();
-
-  // Auto-connect WiFi if credentials were saved
-  if (savedSSID[0] != 0) {
-    tft.setTextColor(COL_FG); tft.setTextSize(1);
-    tft.setCursor(10, 96);  tft.print("Connecting to WiFi...");
-    tft.setTextColor(ST77XX_CYAN); tft.setCursor(10, 112);
-    tft.print(savedSSID);
-    WiFi.begin(savedSSID, savedPass);
-    unsigned long t0 = millis();
-    while (WiFi.status() != WL_CONNECTED && millis()-t0 < 8000) delay(200);
-    tft.fillScreen(COL_BG);
-    if (WiFi.status() == WL_CONNECTED) {
-      // Sync NTP — Chicago Central Time, auto-handles DST
-      configTzTime("CST6CDT,M3.2.0,M11.1.0", "pool.ntp.org");
+  if(savedSSID[0]!=0){
+    tft.setTextColor(COL_ACCENT);tft.setTextSize(1);tft.setCursor(10,150);tft.print("Connecting: ");tft.print(savedSSID);
+    WiFi.begin(savedSSID,savedPass);unsigned long t0=millis();
+    while(WiFi.status()!=WL_CONNECTED&&millis()-t0<8000)delay(200);
+    tft.fillRect(0,146,240,14,COL_BG);
+    if(WiFi.status()==WL_CONNECTED){
+      tft.setTextColor(ST77XX_GREEN);tft.setCursor(10,150);tft.print("WiFi OK  ");tft.print(WiFi.localIP().toString());
+      // NTP sync (US Central Time — change TZ string as needed)
+      configTzTime("CST6CDT,M3.2.0,M11.1.0","pool.ntp.org","time.cloudflare.com");
+    } else {
+      tft.setTextColor(ST77XX_RED);tft.setCursor(10,150);tft.print("WiFi failed");
     }
   }
-
-  currentState = STATE_MENU;
+  delay(1200);
+  tft.fillScreen(COL_BG);
+  currentState=STATE_MENU;
 }
 
-void loop() {
-  switch (currentState) {
-    case STATE_MENU:     runMenu();     break;
-    case STATE_2048:     run2048();     currentState = STATE_MENU; break;
-    case STATE_TETRIS:   runTetris();   currentState = STATE_MENU; break;
-    case STATE_PONG:     runPong();     currentState = STATE_MENU; break;
-    case STATE_WEATHER:  runWeather();  break;
-    case STATE_SMS:      runSMS();      break;
-    case STATE_SETTINGS: runSettings(); break;
+void loop(){
+  switch(currentState){
+    case STATE_MENU:        runMenu();       break;
+    case STATE_GAMES:       runGames();      break;
+    case STATE_2048:        run2048();       currentState=STATE_GAMES; break;
+    case STATE_TETRIS:      runTetris();     currentState=STATE_GAMES; break;
+    case STATE_PONG:        runPong();       currentState=STATE_GAMES; break;
+    case STATE_FLAPPY:      runFlappy();     break;
+    case STATE_SNAKE:       runSnake();      break;
+    case STATE_BREAKOUT:    runBreakout();   break;
+    case STATE_MINESWEEPER: runMinesweeper();break;
+    case STATE_SIMON:       runSimon();      break;
+    case STATE_WEATHER:     runWeather();    break;
+    case STATE_SMS:         runSMS();        break;
+    case STATE_STOPWATCH:   runStopwatch();  break;
+    case STATE_NASA:        runNASA();       break;
+    case STATE_STOCKS:      runStocks();     break;
+    case STATE_NEWS:        runNews();       break;
+    case STATE_CALC:        runCalc();       break;
+    case STATE_SETTINGS:    runSettings();   break;
+    default:                currentState=STATE_MENU; break;
   }
 }
+
+
