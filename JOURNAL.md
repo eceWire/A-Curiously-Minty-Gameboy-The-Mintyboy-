@@ -1,10 +1,11 @@
-# Mintyboy Devlogs / Journal Entries
 
-> Disclaimer: All of these are copy/pasted from devlogs from the Staradance challenge, Slack member told me to do so :)
+# Mintyboy Journals / Journal Entries
+
+> Disclaimer: All of these are copy/pasted from Journals from the Staradance challenge, Slack member told me to do so :)
 
 ---
 
-# Devlog - 01
+# Journal - 01
 
 ## 10h 22m 49s logged
 
@@ -15,10 +16,14 @@ Using an Altoids tin and an Arduino, I’ve been building a fully functional min
 At this stage, most of the core functionality is finished, and everything is coming together exactly how I imagined. The display works, the logic behind the game is solid, and the overall structure of the code is nearly finalized. The main thing left to polish is the pushbutton input system, since the controls still need to be a bit more responsive and reliable.
 
 Once I fix that, the project will essentially be complete, and I can focus on final touches like optimizing performance and maybe adding a few extra features. It’s been a challenging but super rewarding experience, and I’m really close to having a fully working Arduino-powered “phone” inside an Altoids tin.
+![Uploading IMG_4263.webp…]()
+<img width="674" height="900" alt="IMG_4262" src="https://github.com/user-attachments/assets/7ae7a654-2e11-4565-9d4e-8c29b600cc94" />
+<img width="674" height="900" alt="IMG_4263" src="https://github.com/user-attachments/assets/59b405a4-91f1-4268-9cbf-e068860d87b8" />
+
 
 ---
 
-# Devlog - 02
+# Journal - 02
 
 ## 30h 37m 19s logged
 
@@ -46,10 +51,17 @@ That’s something I didn’t originally plan, but once I started adding feature
 Hardware-wise, everything is crammed into an Altoids tin, which makes it feel super compact and kind of ridiculous in the best way. There’s still some tweaking left—mainly refining controls and polishing the UI—but it’s at the point where it’s fully usable and actually fun.
 
 Overall, this project taught me a ton—not just about Arduino and ESP32, but about designing systems, managing features, and turning a small idea into something way bigger than I expected.
+<img width="674" height="900" alt="IMG_4821" src="https://github.com/user-attachments/assets/9d6fd21c-e809-40e8-8de0-d7312778dad9" />
+<img width="674" height="900" alt="IMG_4820" src="https://github.com/user-attachments/assets/f5c9df6e-d1e9-46d0-ad70-d6b9ab1c97df" />
+<img width="152" height="203" alt="IMG_4823" src="https://github.com/user-attachments/assets/4c625d12-b32e-4e9d-922e-23b6c2669ce6" />
+<img width="674" height="900" alt="IMG_4822" src="https://github.com/user-attachments/assets/86a4cc19-89b0-436d-b600-e1a0df13bc41" />
+
+
+
 
 ---
 
-# Devlog - 03
+# Journal - 03
 
 ## 11h 24m 58s logged
 
@@ -93,11 +105,37 @@ To test all features, users should upload the code to an Arduino Nano ESP32 with
 
 ---
 
-# Devlog - Feature Expansion
+# Journal - 04
+
+## 29h 9m 16s logged
+Hi guys!
+
+I’ve been working for 24 hours on this project and the new features are perfected
+
+New:
+• Flappy Bird
+• Timer/Stopwatch
+
+• Flappy Bird - I’ve added another classic game to this: Flappy Bird! There still needs to be some tweaks to this, as once you click the button, it will leave a little mark once it goes up, but other than that, EEPROM and everything work!
+
+•Stopwatch - Neat feature that I thought may be helpful in the real world, it does work and can save your time!
+
+What next?
+
+• I’m thinking of adding a world clock. I would need to design the app, link it to the Arduino Nano ESP32, and then display. Let me know what you guys think!
+
+<img width="676" height="900" alt="IMG_5061" src="https://github.com/user-attachments/assets/34ebb7f6-7aa1-4e98-8625-528535f1016d" />
+<img width="675" height="900" alt="IMG_4979" src="https://github.com/user-attachments/assets/7e84849a-6a07-4468-8427-6ca7e5d05721" />
+<img width="675" height="900" alt="IMG_4980" src="https://github.com/user-attachments/assets/970c94e1-79b7-40d9-ac12-902845a02efc" />
+
+
+## 29h 9m 16 s logged
+
+# Journal - Feature Expansion
 
 ## 48h 59m 29s logged
 
-Mintyboy Devlog — Feature Expansion
+Mintyboy Journal — Feature Expansion
 
 Overview  
 Mintyboy has evolved from a basic handheld into a small multi-purpose system. It now combines games, utilities, and live data features on a single ESP32 with a 1.96 inch TFT display.  
@@ -191,14 +229,22 @@ News reader (RSS-based)
 Stock tracker with chart rendering  
 
 What else should I add guys??
+![Uploading IMG_5061.webp…]()
+
+<img width="676" height="900" alt="IMG_5059" src="https://github.com/user-attachments/assets/98d74b1c-1c89-43ff-8232-1e2c34e057c5" />
+<img width="676" height="900" alt="IMG_5054" src="https://github.com/user-attachments/assets/2d2a8263-fe5b-4d88-9477-105be93053ce" />
+
+<img width="676" height="900" alt="IMG_5058" src="https://github.com/user-attachments/assets/6facb46b-f602-4ec5-b643-59c87ca1ee26" />
+
+
 
 ---
 
-# Devlog - NASA Feature
+# Journal - NASA Feature
 
 ## 15h 43m 7s logged
 
-Devlog: NASA Feature (Mintyboy)
+Journal: NASA Feature (Mintyboy)
 
 Overview  
 
@@ -262,11 +308,11 @@ A space exploration hub!
 
 ---
 
-# Devlog - PCB
+# Journal - PCB
 
 ## 8h 45m 3s logged
 **I don't know why on Stardance it says 18 hours, this was NOT 18 hours spent on this, coding was like a lot**
 
-Devlog - PCB
+Journal - PCB
 
 I’ve been working on this PCB for a while, and I’ve made the project REALLY compact right now. So far, I’m thinking of the news feature to add actual articles instead of just the headlines (it won’t be easy, but I’ll try). In order to complete this, adding a PCB and not just on a breadboard is totally needed, and here’s how it looks so far :) Btw I’m actually not doing this on KiCad, I prefer EasyEDA.. I forgot to mention the code that I’ve been working on, I’m adding a little feature with a camera, but it’s been quite difficult, using OV7670, and it’s been taking a LOT of time
