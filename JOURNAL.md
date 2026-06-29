@@ -16,9 +16,11 @@ Using an Altoids tin and an Arduino, I’ve been building a fully functional min
 At this stage, most of the core functionality is finished, and everything is coming together exactly how I imagined. The display works, the logic behind the game is solid, and the overall structure of the code is nearly finalized. The main thing left to polish is the pushbutton input system, since the controls still need to be a bit more responsive and reliable.
 
 Once I fix that, the project will essentially be complete, and I can focus on final touches like optimizing performance and maybe adding a few extra features. It’s been a challenging but super rewarding experience, and I’m really close to having a fully working Arduino-powered “phone” inside an Altoids tin.
-![Uploading IMG_4263.webp…]()
-<img width="674" height="900" alt="IMG_4262" src="https://github.com/user-attachments/assets/7ae7a654-2e11-4565-9d4e-8c29b600cc94" />
-<img width="674" height="900" alt="IMG_4263" src="https://github.com/user-attachments/assets/59b405a4-91f1-4268-9cbf-e068860d87b8" />
+<img width="674" height="900" alt="IMG_4262" src="https://github.com/user-attachments/assets/520d92e8-355e-44cd-aa53-908eb88e579f" />
+
+<img width="674" height="900" alt="IMG_4263" src="https://github.com/user-attachments/assets/eb5e8009-91c4-41fa-915b-8a55f97b7fd1" />
+
+
 
 
 ---
@@ -316,3 +318,6 @@ A space exploration hub!
 Journal - PCB
 
 I’ve been working on this PCB for a while, and I’ve made the project REALLY compact right now. So far, I’m thinking of the news feature to add actual articles instead of just the headlines (it won’t be easy, but I’ll try). In order to complete this, adding a PCB and not just on a breadboard is totally needed, and here’s how it looks so far :) Btw I’m actually not doing this on KiCad, I prefer EasyEDA.. I forgot to mention the code that I’ve been working on, I’m adding a little feature with a camera, but it’s been quite difficult, using OV7670, and it’s been taking a LOT of time
+
+<img width="1135" height="653" alt="Screenshot 2026-06-28 150202" src="https://github.com/user-attachments/assets/574752b4-416b-4301-bf4c-6b1e3e178565" />
+
