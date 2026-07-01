@@ -1,3 +1,19 @@
+<img width="741" height="989" alt="IMG_5061" src="https://github.com/user-attachments/assets/61cc7ca7-40b6-472e-b40f-6075783a4b61" />
+
+<img width="741" height="989" alt="IMG_5054" src="https://github.com/user-attachments/assets/a20bb075-97c9-4fdb-b30d-fe78f4f0c418" />
+<img width="556" height="989" alt="IMG_5001 MOV" src="https://github.com/user-attachments/assets/44148fa6-aa6a-4021-bee3-aa8944b443dd" />
+<img width="741" height="989" alt="IMG_5055" src="https://github.com/user-attachments/assets/8c2f74cb-133c-4b2f-b15b-e5de728c60b5" />
+<img width="741" height="989" alt="IMG_5056" src="https://github.com/user-attachments/assets/f179e961-5689-46c2-9103-6ae0494a4200" />
+<img width="741" height="989" alt="IMG_5057" src="https://github.com/user-attachments/assets/cac257ce-a5a4-4374-a8c5-ce0436eedfe4" />
+<img width="741" height="989" alt="IMG_5058" src="https://github.com/user-attachments/assets/539304e4-12a0-4a00-928f-983b926ad9e1" />
+<img width="741" height="989" alt="IMG_5059" src="https://github.com/user-attachments/assets/39878fa9-ade4-4f97-b843-7659b54976fb" />
+
+<img width="527" height="516" alt="image" src="https://github.com/user-attachments/assets/0dfa8c94-ec5d-482f-aa88-3faee584e02d" />
+
+<img width="517" height="522" alt="image" src="https://github.com/user-attachments/assets/71f3bd13-417c-4961-9f9f-84b9c30df483" />
+
+
+
 # A Curiously Minty Gameboy (The Mintyboy)
 
 A Curiously Minty Gameboy, or The Mintyboy, is a handheld gaming and utility system built inside an Altoids tin for the Hack Club Stardance Challenge.
